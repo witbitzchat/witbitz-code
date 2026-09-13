@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "witbitz-code"
+version = "1.0.0"
+description = "Reach OpenCode on this computer from the Witbitz Spaces Code section, through an end-to-end sealed relay."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Witbitz" }]
+keywords = ["witbitz", "opencode", "relay", "e2ee"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Environment :: Console",
+  "Topic :: Software Development",
+]
+dependencies = [
+  "cryptography>=41",
+  "websockets>=13",
+  "httpx>=0.25",
+  "segno>=1.5",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Documentation = "https://witbitz.chat/docs/opencode.md"
+Repository = "https://github.com/witbitzchat/witbitz-code"
+
+[project.scripts]
+witbitz-code = "witbitz_code.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

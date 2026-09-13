@@ -1,0 +1,19 @@
+name = "witbitz-relay"
+main = "relay.mjs"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+# The Code section's relay (docs/opencode-relay.md): a first-party hostname, so the app's CSP names a witbitz origin and
+# nothing else. A Workers CUSTOM DOMAIN on the witbitz.chat zone (DNS is on Cloudflare) — wrangler creates the record and
+# the certificate. workers_dev stays on for the parked browse room.
+routes = [ { pattern = "code-relay.witbitz.chat", custom_domain = true } ]
+
+# One Durable Object class = the per-channel pub/sub hub. SQLite-backed class (available on the Workers Free plan);
+# we use no storage, only WebSocket hibernation.
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]
