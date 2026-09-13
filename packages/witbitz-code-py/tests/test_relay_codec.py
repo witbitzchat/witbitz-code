@@ -278,10 +278,18 @@ YES = [
     ["DELETE", "/session/ses_abc?directory=%2Fx"], ["get", "/agent"], ["GET", "/session/ses.with.dots_1/message"],
     # the New-session folder picker: the computer's home, and a folder listing (names only)
     ["GET", "/path"], ["GET", "/file?directory=%2Fhome%2Fu&path=witbitz"],
+    # the agent's question tool: pending questions, and the answer (or the dismissal)
+    ["GET", "/session/ses_abc/todo?directory=%2Fx"],  # the live todo list
+    ["POST", "/session/ses_abc/revert"], ["POST", "/session/ses_abc/unrevert"], ["POST", "/session/ses_abc/summarize"],  # /undo /redo /compact
+    ["GET", "/command?directory=%2Fx"],  # the "/" menu reads commands; running one is an ordinary message
+    ["GET", "/question?directory=%2Fx"], ["POST", "/question/que_09acc14a40015iMUb0LeM04Edd/reply"], ["POST", "/question/que_1/reject"],
 ]
 NO = [
     ["GET", "/event"], ["POST", "/session/ses_abc/shell"], ["POST", "/session/ses_abc/command"], ["GET", "/file/content?path=%2Fetc%2Fpasswd"],
     ["POST", "/file"], ["GET", "/file/status"], ["GET", "/path/x"],
+    ["POST", "/session/ses_abc/todo"], ["GET", "/session/./todo"], ["GET", "/session/ses_abc/revert"], ["POST", "/session/ses_abc/revert/x"], ["GET", "/session/ses_abc/unrevert"], ["POST", "/session/ses_abc/summarize/x"], ["POST", "/session/ses_abc/share"],
+    ["POST", "/session/ses_abc/command"], ["GET", "/command/review"],  # the command route runs !`…` from its arguments
+    ["POST", "/question"], ["GET", "/question/que_1/reply"], ["POST", "/question/que_1"], ["POST", "/question/./reply"], ["POST", "/question/que_1/reply/x"],
     ["PUT", "/session/ses_abc"], ["GET", "/session/../config"], ["GET", "//agent"], ["GET", "agent"], ["DELETE", "/session"],
     ["POST", "/session/ses_abc/permissions/per_1/extra"], ["GET", "/agent#x"], ["GET", "/agent\n"], ["GET", None], [None, "/agent"],
     ["GET", "/session/" + "a" * 129 + "/message"],

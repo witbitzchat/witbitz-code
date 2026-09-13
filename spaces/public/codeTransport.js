@@ -24,6 +24,10 @@ export function directTransport({ base, pass, fetchImpl = (...a) => fetch(...a) 
     label: root,
     status: () => 'online',
     onChange: () => () => {},
+    can: () => false, // Auto mode lives in the connector — a direct server has none
+    autoSessions: () => [],
+    onAuto: () => () => {},
+    setAuto: () => false,
     kick: () => {},
     close: () => {},
     async request(method, p, body) {
@@ -71,6 +75,11 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
   // This device's id for its event-stream interest, so one device leaving never closes a stream another is reading.
   const cid = rid()
   let last = 'connecting'
+  // Auto mode (docs/code-auto-mode.md §5): what the connector says it can do, which sessions it decides for, and its verdicts.
+  let caps = []
+  let autoList = []
+  const autoListeners = new Set()
+  const tellAuto = (e) => { for (const fn of autoListeners) { try { fn(e) } catch { /* */ } } }
   let resubTimer = 0
   let freshTimer = 0
 
@@ -106,6 +115,9 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     const renewed = typeof m.k === 'string' && m.k && m.k !== nonce
     if (typeof m.k === 'string' && m.k) nonce = m.k
     lastHello = now()
+    const nextCaps = Array.isArray(m.caps) ? m.caps.filter((c) => typeof c === 'string').slice(0, 16) : []
+    const nextAuto = nextCaps.includes('auto') && Array.isArray(m.auto) ? m.auto.filter((s) => typeof s === 'string' && /^ses[A-Za-z0-9_-]{1,80}$/.test(s)) : []
+    if (nextCaps.join() !== caps.join() || nextAuto.join() !== autoList.join()) { caps = nextCaps; autoList = nextAuto; tellAuto({ kind: 'sessions', sessions: [...autoList] }) }
     // A NEW nonce = the connector restarted, redialled or rotated: anything it has not answered was refused or lost —
     // re-ask the reads with the new nonce and renew the streams. (Mutations are never re-sent.)
     if (renewed && last === 'online') { resubscribe(); for (const e of pending.values()) if (e.resend) e.resend() }
@@ -121,6 +133,7 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     onPeers: (n) => { if (n < 2) lastHello = 0; else peer.send({ t: 'ping' }); changed() },
     onMessage: (m) => {
       if (m.t === 'hello') { onHello(m); return }
+      if (m.t === 'autoverdict') { if (typeof m.sessionID === 'string' && typeof m.action === 'string') tellAuto({ kind: 'verdict', verdict: m }); return }
       if (m.t === 'res') {
         const e = pending.get(m.id)
         if (!e) return // another device's request, or one we gave up on
@@ -165,11 +178,16 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     computer,
     status,
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    can: (cap) => caps.includes(cap),
+    autoSessions: () => [...autoList],
+    onAuto(fn) { autoListeners.add(fn); return () => autoListeners.delete(fn) },
+    /** Switch Auto for one session on the computer (nonce-checked there). The next hello confirms it. */
+    setAuto(sid, dir, on) { if (!nonce || !caps.includes('auto')) return false; peer.send({ t: 'auto', k: nonce, sid, dir, on: !!on }); return true },
     kick: () => peer.kick(),
     close() {
       clearInterval(resubTimer); clearInterval(freshTimer); clearTimeout(giveUpTimer)
       for (const e of pending.values()) { clearTimeout(e.timer); e.resolve({ ok: false, status: 0, json: null, text: 'closed' }) }
-      pending.clear(); subs.clear(); listeners.clear()
+      pending.clear(); subs.clear(); listeners.clear(); autoListeners.clear()
       peer.stop()
     },
     async request(method, p, body) {

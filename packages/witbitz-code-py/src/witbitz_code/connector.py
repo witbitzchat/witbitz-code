@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from . import _js
+from .auto_runner import AutoRunner
 from .pairings import DEFAULT_OPENCODE_URL, hostname, read_env_password
 from .relay import RELAY_URL, Connect, RelayPeer, allowed_event_path, allowed_request, project_response
 
@@ -39,6 +40,11 @@ SWEEP_EVERY_S = 15.0
 MAX_RESPONSE = 30 * 1024 * 1024  # bytes; below the page's 32 MiB reassembly cap: refuse while reading, not by a timeout
 START_HINT = "witbitz-code serve"
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")  # an HTTP method fetch() would accept
+
+
+def default_auto_dir() -> Path:
+    """Auto mode's state (per pairing) and its verdict log — the JS connector's AUTO_DIR."""
+    return Path(os.environ.get("WITBITZ_CODE_AUTO_DIR") or Path.home() / ".witbitz" / "code")
 
 
 def _round(x: float) -> int:
@@ -130,7 +136,7 @@ class PairingServer:
 
     def __init__(self, pairing: dict, *, client: httpx.AsyncClient, flush_ms: float, log: Callable[[str], Any],
                  connect: Connect | None = None, request_timeout_ms: float = REQUEST_TIMEOUT_MS, max_senders: int = 64,
-                 max_response_bytes: int = MAX_RESPONSE) -> None:
+                 max_response_bytes: int = MAX_RESPONSE, auto_dir: Path | None = None, auto_poll_ms: float = 1000) -> None:
         self.pairing = pairing
         self.name = pairing.get("name") if _js.truthy(pairing.get("name")) else hostname()
         self.base = re.sub(r"/+\Z", "", _js.js_string(pairing.get("opencodeUrl") or DEFAULT_OPENCODE_URL))
@@ -153,15 +159,23 @@ class PairingServer:
                               # A page socket fell out of the replay window: its recorded frames would open again — rotate the
                               # nonce so every request it ever sealed is refused, and tell the pages (they re-ask reads).
                               on_evict=lambda _sender: self._rotate(), max_senders=max_senders)
+        # Auto mode's loop for this pairing (docs/code-auto-mode.md) — its state is read now, so the first hello lists it.
+        safe_id = _js.utf16_slice(re.sub(r"[^A-Za-z0-9_-]", "_", _js.js_string(pairing.get("computerId") or "default")), 0, 64)
+        auto_dir = Path(auto_dir) if auto_dir else default_auto_dir()
+        self.auto = AutoRunner(base=self.base, auth=self._auth, client=client, poll_ms=auto_poll_ms, log=log,
+                               state_path=auto_dir / f"auto-{safe_id}.json", log_path=auto_dir / "auto-log.jsonl",
+                               on_verdict=lambda v: self.peer.send({"t": "autoverdict", **v, "ts": int(time.time() * 1000)}))
 
     # ── lifecycle ─────────────────────────────────────────────────────────────────────────────────────────────────────
     async def start(self) -> None:
         self._spawn(self._every(SWEEP_EVERY_S, self._sweep))
         self._spawn(self._every(HELLO_EVERY_S, lambda: self.hello() if self.peer.peers >= 2 else None))
+        self.auto.start()
         await self.peer.start()
 
     def stop(self) -> None:
         self._stopping = True
+        self.auto.stop()
         for p in list(self._subs):
             self._unsubscribe(p, _ALL)
         for c in list(self._inflight.values()):
@@ -219,8 +233,9 @@ class PairingServer:
     def hello(self) -> asyncio.Future | None:
         if not self.nonce:
             return None  # no hello before this socket has its nonce
+        # caps: what this connector can do beyond the requests — a page shows the Auto switch only when `auto` is here.
         return self.peer.send({"t": "hello", "ver": VERSION, "name": self.name, "computerId": self.pairing.get("computerId") or "",
-                               "k": self.nonce, "ts": int(time.time() * 1000)})
+                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto"], "auto": self.auto.sessions()})
 
     def _auth(self) -> dict:
         pw = self.pairing.get("password") or read_env_password(Path(self.pairing["envFile"]) if self.pairing.get("envFile") else None)
@@ -244,6 +259,11 @@ class PairingServer:
         elif t == "unsub":
             if current:
                 self._unsubscribe(m.get("p"), m.get("c"))  # no id = the anonymous interest, as in sub
+        elif t == "auto":
+            # Auto mode on/off for one session — nonce-checked like a request (a recording cannot switch it). No new power: a
+            # page that can switch Auto could already answer the same asks itself.
+            if current and self.auto.set_auto(m.get("sid"), m.get("dir"), _js.truthy(m.get("on"))):
+                self.hello()
         elif t == "req":
             await self._request(m, current)
 
@@ -428,14 +448,14 @@ def local_client() -> httpx.AsyncClient:
 async def start_connector(pairings: list[dict], *, flush_ms: float = 120, log: Callable[[str], Any] = _log_stderr,
                           client: httpx.AsyncClient | None = None, connect: Connect | None = None,
                           request_timeout_ms: float = REQUEST_TIMEOUT_MS, max_senders: int = 64,
-                          max_response_bytes: int = MAX_RESPONSE) -> Connector:
+                          max_response_bytes: int = MAX_RESPONSE, auto_dir: Path | None = None, auto_poll_ms: float = 1000) -> Connector:
     """Serve the given pairings until stop()/aclose(). Options exist for tests: flush_ms, log, client, connect,
-    request_timeout_ms, max_senders, max_response_bytes."""
+    request_timeout_ms, max_senders, max_response_bytes, auto_dir, auto_poll_ms."""
     client = client or local_client()
     servers = []
     for p in pairings:
         s = PairingServer(p, client=client, flush_ms=flush_ms, log=log, connect=connect, request_timeout_ms=request_timeout_ms,
-                          max_senders=max_senders, max_response_bytes=max_response_bytes)
+                          max_senders=max_senders, max_response_bytes=max_response_bytes, auto_dir=auto_dir, auto_poll_ms=auto_poll_ms)
         await s.start()
         servers.append(s)
     return Connector(servers, client)

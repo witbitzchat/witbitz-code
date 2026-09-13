@@ -70,6 +70,17 @@ all the accounts are yours. If a second account belongs to **another person**, r
 - **The OpenCode password** lives in `~/.opencode-server.env` (created 0600 on first pair). The connector adds it to local
   calls, and it never leaves the computer.
 
+**Auto mode** (the shield button in the Code composer, per session) lets this computer answer OpenCode's permission
+prompts while you are away:
+- **Refused at once:** what is never safe, like `rm -rf ~`, `mkfs` or `dd` onto a disk. The agent is told why.
+- **Allowed at once:** read-only commands that stay inside the project, and edits to ordinary files in it.
+- **Everything else** goes to the session's own model, in a throw-away session that can use no tools. Only a clear,
+  low-severity allow runs. A refusal, "ask", an unclear answer or a timeout leaves the prompt for you.
+- **Never "always":** each answer covers that one call.
+
+Each decision is logged to `~/.witbitz/code/auto-log.jsonl` as a digest, never the command. The rules are shared with the
+Node connector and tested against the same cases, so both decide alike.
+
 **What is encrypted, and what isn't.** Requests, responses and events travel end to end. The relay operator sees a
 pseudonymous channel id, IP addresses, connection times, and frame sizes and timing. That's the same class of metadata
 the Spaces room store sees. Anyone holding a pairing secret can drive OpenCode within the allowlist until you run
@@ -84,6 +95,7 @@ Design: `docs/opencode-relay.md` in the Witbitz repository.
 | pairings | `~/.witbitz/code/pairings.json` | `WITBITZ_CODE_PAIRINGS` |
 | OpenCode password | `~/.opencode-server.env` (`OPENCODE_SERVER_PASSWORD=`) | `OPENCODE_ENV_FILE` |
 | pairing QR, as SVG | `~/.witbitz-rc.link.svg` | |
+| Auto mode state + decision log | `~/.witbitz/code/auto-<computer>.json`, `auto-log.jsonl` | `WITBITZ_CODE_AUTO_DIR` |
 | account API | `https://api.witbitz.chat/v1/space` | `RC_BASE`, `RC_ORIGIN` |
 | device-link origins | `https://spaces.witbitz.chat,https://witbitz-spaces.pages.dev` | `RC_LINK_ORIGIN` |
 

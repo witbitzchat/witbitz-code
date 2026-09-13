@@ -278,6 +278,20 @@ const ALLOW = [
   // raises the ceiling — a session the page can already create reads files with `read`/`list` allowed.
   ['GET', '/path'],
   ['GET', '/file'],
+  // The agent's question tool: what is pending, and the answer or the dismissal. Inside the agent loop — answering a
+  // question grants nothing; the turn it resumes is still held to the session's permission prompts.
+  // The "/" menu READS commands and skills. Running one is an ordinary message the page builds (codeCommands.js):
+  // POST /session/:id/command runs !`…` from its arguments in a shell, unprompted — it must never be on this list.
+  ['GET', '/command'],
+  ['GET', `/session/${SEG}/todo`], // the agent's todo list, as it stands
+  ['GET', '/question'],
+  ['POST', `/question/${SEG}/reply`],
+  ['POST', `/question/${SEG}/reject`],
+  // /undo /redo /compact. Undo puts the session's files back to a snapshot OpenCode took before the turn; redo puts them
+  // forward again; compact asks the model to summarize. None runs anything the session's permission prompts do not hold.
+  ['POST', `/session/${SEG}/revert`],
+  ['POST', `/session/${SEG}/unrevert`],
+  ['POST', `/session/${SEG}/summarize`],
 ].map(([m, p]) => [m, new RegExp(`^${p}$`)])
 
 /** Is `method path?query` something the connector will forward? The event stream is NOT here: it is `sub`, not a req. */

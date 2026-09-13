@@ -107,3 +107,18 @@ test('relay: a replayed OLD hello (earlier ts) does not move the page to a stale
   assert.equal(tr._nonce(), before, 'a hello older than the last one is ignored')
   assert.equal((await tr.request('GET', '/agent')).ok, true, 'requests keep working')
 })
+
+// ── Auto mode (docs/code-auto-mode.md §5) ──
+test('relay: hello says whether the computer can do Auto and which sessions are in it; an old connector says nothing', async (t) => {
+  const { tr } = await rig(t)
+  assert.ok(await until(() => tr.status() === 'online'))
+  const seen = []
+  tr.onAuto((e) => seen.push(e))
+  tr._hello({ t: 'hello', k: tr._nonce(), ts: Date.now() + 1000, caps: ['auto'], auto: ['ses_1', 7, 'bad id'] })
+  assert.equal(tr.can('auto'), true)
+  assert.deepEqual(tr.autoSessions(), ['ses_1'], 'only well-formed session ids')
+  assert.ok(seen.some((e) => e.kind === 'sessions'), 'listeners hear the change')
+  tr._hello({ t: 'hello', k: tr._nonce(), ts: Date.now() + 2000 })
+  assert.equal(tr.can('auto'), false, 'a hello without caps is a connector that predates Auto')
+  assert.deepEqual(tr.autoSessions(), [])
+})

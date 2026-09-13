@@ -171,6 +171,15 @@ class FakeOpenCode:
                     with outer.lock:
                         outer.seen.append({"aborted": path})
                     return
+                if path == "/permission" and self.command == "GET":  # Auto mode's poll (auto_runner.py)
+                    with outer.lock:
+                        pending = json.dumps(outer.pending)
+                    return self._send(200, pending)
+                reply = re.fullmatch(r"/permission/([^/]+)/reply", path)
+                if reply and self.command == "POST":
+                    with outer.lock:
+                        outer.pending[:] = [p for p in outer.pending if p.get("id") != reply.group(1)]
+                    return self._send(200, "true")
                 if path == "/event":
                     return self._stream()
                 return self._send(200, json.dumps({"ok": True}))
@@ -209,6 +218,7 @@ class FakeOpenCode:
             do_GET = do_POST = do_PATCH = do_DELETE = _handle
 
         self._queues: dict = {}
+        self.pending: list = []  # permission asks waiting, as GET /permission lists them
         self.once_calls = 0
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.daemon_threads = True

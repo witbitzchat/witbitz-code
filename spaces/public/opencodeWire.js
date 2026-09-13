@@ -32,11 +32,58 @@ const basename = (p) => String(p).split('/').pop() || 'attachment'
 // part a reader cannot get from the schema.
 const IGNORED = new Set([
   'server.connected', 'server.heartbeat', 'plugin.added', 'catalog.updated', 'reference.updated', 'integration.updated',
-  'integration.connection.updated', 'models-dev.refreshed', 'session.updated', 'session.status', 'session.diff',
+  'integration.connection.updated', 'models-dev.refreshed', 'session.status', 'session.diff',
   'message.updated', 'message.removed', 'message.part.removed', 'file.edited', 'file.watcher.updated',
-  'lsp.updated', 'todo.updated', 'project.updated', 'project.directories.updated', 'vcs.branch.updated', 'installation.updated',
+  'lsp.updated', 'project.updated', 'project.directories.updated', 'vcs.branch.updated', 'installation.updated',
   'installation.update-available', 'permission.v2.asked', 'permission.v2.replied', 'question.v2.asked', 'question.v2.replied',
 ])
+
+// ── the agent's todo list (the measured wire is in codeTodos.js's header) ──
+const STATUSES = ['pending', 'in_progress', 'completed', 'cancelled']
+const PRIORITIES = ['high', 'medium', 'low']
+
+/** The list as it can be drawn: the agent's order, known statuses and priorities, no empty items. */
+export function normTodos(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((t) => t && typeof t === 'object' && String(t.content || '').trim())
+    .map((t) => ({
+      content: String(t.content),
+      status: STATUSES.includes(t.status) ? t.status : 'pending',
+      priority: PRIORITIES.includes(t.priority) ? t.priority : 'medium',
+    }))
+}
+
+// ── the agent's question tool (the measured wire is in codeQuestions.js's header) ──
+const qstr = (v) => (v == null ? '' : String(v))
+
+/** A request from `question.asked` or GET /question → {id, sessionID, callID, questions} — or null when it is not one. */
+/** A session's undo point (opencode 1.18.30: revert {messageID, partID?, snapshot, diff}) — only what the page reads.
+ *  `files`: OpenCode had a snapshot to put the files back from. Measured: in a folder that is not a git repository the
+ *  undo still hides the turn, but snapshot is false and the files stay as they are. */
+export function normRevert(r) {
+  if (!r || typeof r !== 'object' || typeof r.messageID !== 'string' || !r.messageID) return null
+  return { messageID: r.messageID, ...(typeof r.partID === 'string' && r.partID ? { partID: r.partID } : {}), files: !!r.snapshot }
+}
+
+export function normQuestionRequest(p) {
+  if (!p || typeof p !== 'object' || !p.id || !Array.isArray(p.questions)) return null
+  const questions = p.questions
+    .filter((q) => q && typeof q === 'object' && qstr(q.question).trim())
+    .map((q) => ({
+      question: qstr(q.question),
+      header: qstr(q.header),
+      options: (Array.isArray(q.options) ? q.options : [])
+        .filter((o) => o && typeof o === 'object' && o.label != null && qstr(o.label) !== '')
+        .map((o) => ({ label: qstr(o.label), description: qstr(o.description) })),
+      multiple: q.multiple === true,
+      custom: q.custom !== false,
+    }))
+  if (!questions.length) return null
+  // A question with no options and no typing cannot be answered. It is never DROPPED — the reply needs one answer per
+  // question, in order — the request is marked, and the card offers only Skip.
+  const answerable = questions.every((q) => q.options.length > 0 || q.custom)
+  return { id: qstr(p.id), sessionID: qstr(p.sessionID), callID: qstr(p.tool && p.tool.callID), questions, answerable }
+}
 
 /** ONE SSE event → the rc events it means (0, 1 or more). `sessionID` scopes it: GET /event is a GLOBAL stream
  *  carrying every session on the server, so an unscoped mapper would mix another room's run into this one's pane.
@@ -62,6 +109,8 @@ export function mapEvent(ev, sessionID = '', roles = null) {
 
   if (type === 'session.created') return sid ? [{ kind: 'session', id: sid }] : []
   if (type === 'session.idle') return [{ kind: 'idle' }]
+  // An undo or redo made anywhere (the TUI, another device) — the session record carries its undo point, or none.
+  if (type === 'session.updated') return sid ? [{ kind: 'revert', revert: normRevert(p.info && p.info.revert) }] : []
   if (type === 'session.compacted') return [{ kind: 'note', text: 'context compacted' }]
   if (type === 'session.error') return [{ kind: 'stderr', text: errText(p) }]
 
@@ -101,6 +150,14 @@ export function mapEvent(ev, sessionID = '', roles = null) {
     }]
   }
   if (type === 'permission.replied') return [{ kind: 'settled', id: p.id }]
+  // The agent's question tool (codeQuestions.js has the measured wire). Only the v1 events fire on this stream.
+  if (type === 'question.asked') {
+    const q = normQuestionRequest(p)
+    return q ? [{ kind: 'question', ...q }] : []
+  }
+  // The agent's todo list: the WHOLE list, every time (an empty one clears it).
+  if (type === 'todo.updated') return [{ kind: 'todos', todos: normTodos(p.todos) }]
+  if (type === 'question.replied' || type === 'question.rejected') return p.requestID ? [{ kind: 'question-settled', id: String(p.requestID) }] : []
   return []
 }
 export const errText = (p) => {

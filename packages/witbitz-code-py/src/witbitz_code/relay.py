@@ -528,6 +528,17 @@ _ALLOW = [
         # New session's folder picker: the computer's home, and folder listings under it (names, never contents)
         ("GET", "/path"),
         ("GET", "/file"),
+        # the agent's question tool: what is pending, and the answer or the dismissal (inside the agent loop)
+        # the "/" menu reads commands and skills; POST /session/:id/command runs !`…` from its arguments — never listed
+        ("GET", "/command"),
+        ("GET", f"/session/{_SEG}/todo"),  # the agent's todo list, as it stands
+        ("GET", "/question"),
+        ("POST", f"/question/{_SEG}/reply"),
+        ("POST", f"/question/{_SEG}/reject"),
+        # /undo /redo /compact: files back to OpenCode's pre-turn snapshot, forward again, and a model-written summary
+        ("POST", f"/session/{_SEG}/revert"),
+        ("POST", f"/session/{_SEG}/unrevert"),
+        ("POST", f"/session/{_SEG}/summarize"),
     ]
 ]
 

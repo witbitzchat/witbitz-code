@@ -110,11 +110,19 @@ test('the allowlist admits exactly the calls the Code section makes, and nothing
     // the New-session folder picker: the computer's home, and a folder listing (names only). Neither raises the
     // ceiling — a session the page can already create reads files with `read`/`list` allowed.
     ['GET', '/path'], ['GET', '/file?directory=%2Fhome%2Fu&path=witbitz'],
+    // the agent's question tool: pending questions, and the answer (or the dismissal) — inside the agent loop
+    ['GET', '/session/ses_abc/todo?directory=%2Fx'], // the live todo list
+    ['POST', '/session/ses_abc/revert'], ['POST', '/session/ses_abc/unrevert'], ['POST', '/session/ses_abc/summarize'], // /undo /redo /compact
+    ['GET', '/command?directory=%2Fx'], // the "/" menu READS the commands; running one is an ordinary message (codeCommands.js)
+    ['GET', '/question?directory=%2Fx'], ['POST', '/question/que_09acc14a40015iMUb0LeM04Edd/reply'], ['POST', '/question/que_1/reject'],
   ]
   for (const [m, p] of yes) assert.equal(allowedRequest(m, p), true, `${m} ${p}`)
   const no = [
     ['GET', '/event'], ['POST', '/session/ses_abc/shell'], ['POST', '/session/ses_abc/command'], ['GET', '/file/content?path=%2Fetc%2Fpasswd'],
     ['POST', '/file'], ['GET', '/file/status'], ['GET', '/path/x'],
+    ['POST', '/session/ses_abc/todo'], ['GET', '/session/./todo'], ['GET', '/session/ses_abc/revert'], ['POST', '/session/ses_abc/revert/x'], ['GET', '/session/ses_abc/unrevert'], ['POST', '/session/ses_abc/summarize/x'], ['POST', '/session/ses_abc/share'],
+    ['POST', '/session/ses_abc/command'], ['GET', '/command/review'], // the command route runs !`…` from the arguments — never
+    ['POST', '/question'], ['GET', '/question/que_1/reply'], ['POST', '/question/que_1'], ['POST', '/question/./reply'], ['POST', '/question/que_1/reply/x'],
     ['PUT', '/session/ses_abc'], ['GET', '/session/../config'], ['GET', '//agent'], ['GET', 'agent'], ['DELETE', '/session'],
     ['POST', '/session/ses_abc/permissions/per_1/extra'], ['GET', '/agent#x'],
   ]

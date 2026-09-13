@@ -17,6 +17,10 @@ type.
   and your computer hold. The relay sees a random channel name, timing and sizes — never content.
 - **The connector does only what the Code page does** (sessions, turns, permissions, the model catalog, the event
   stream). Any other OpenCode call is refused on your computer, before it reaches OpenCode.
+- **Auto mode is decided on your computer** (per session, off by default). What is never safe is refused, like `rm -rf ~`.
+  Read-only commands inside the project and ordinary edits are allowed, and the session's own model reviews the rest
+  with no tools. Anything short of a clear, low-risk allow still comes to you, and nothing is granted "always". Decisions
+  are logged as digests in `~/.witbitz/code/auto-log.jsonl`. Design: [`docs/code-auto-mode.md`](docs/code-auto-mode.md).
 
 Setup guide: **[witbitz.chat/docs/opencode.md](https://witbitz.chat/docs/opencode.md)**.
 The full design — wire format, key derivation, replay protection, the relay's limits — is
@@ -70,10 +74,12 @@ production.
 | `spaces/public/codeTransport.js`, `opencodeWire.js` | the page's side: the relay transport and OpenCode's event mapping |
 | `spaces/public/codeComputers.js` | the account's sealed registry of paired computers |
 | `spaces/public/deviceLink.js`, `recovery.js`, `compress.js`, `qrRender.js` | device link and account sealing used by pairing |
+| `tools/code-auto.mjs`, `tools/code-auto-runner.mjs` | Auto mode: the rules (hard deny, fast allow, the reviewer prompt, verdict parsing) and the loop that answers OpenCode's permission asks |
+| `tools/code-auto.vectors.json` | the shared Auto cases both implementations are tested against |
 | `spaces/public/downloads/witbitz-code.mjs` | the built single file (a test fails if it is stale) |
 | `relay/relay.mjs` | the relay — a Cloudflare Worker + Durable Object that forwards frames between the sockets on a channel |
 | `packages/witbitz-code-py/` | the Python implementation, tested against the JavaScript one |
-| `docs/opencode-relay.md` | the design |
+| `docs/opencode-relay.md`, `docs/code-auto-mode.md` | the design: the relay, and Auto mode |
 
 Some comments and the design doc refer to parts of the Spaces app that are not in this repository (for example the Code
 page itself, `opencodeApp.js`).
@@ -82,9 +88,9 @@ page itself, `opencodeApp.js`).
 
 ```bash
 npm ci
-npm test              # codec, connector, pairing, page transport, QR, build freshness
+npm test              # codec, connector, pairing, page transport, QR, Auto mode, build freshness
 npm run test:relay    # the relay in the Workers runtime (miniflare)
-npm run test:python   # the Python package, including frames and flows checked against the JavaScript modules
+npm run test:python   # the Python package, including frames, flows and Auto decisions checked against the JavaScript modules
 ```
 
 (`test:python` needs `pip install -e "packages/witbitz-code-py[test]"` first.)

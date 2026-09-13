@@ -1,0 +1,900 @@
+{
+  "_about": "Shared cases for Code Auto mode (docs/code-auto-mode.md). tools/code-auto.test.mjs runs them against tools/code-auto.mjs; the Python twin must give the same answers. stage: hard-deny | fast-allow | review (the model decides).",
+  "directory": "/home/u/repo",
+  "home": "/home/u",
+  "cases": [
+    {
+      "name": "rm -rf the filesystem root",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "rm -rf /"
+        ],
+        "metadata": {
+          "command": "rm -rf /"
+        }
+      },
+      "stage": "hard-deny"
+    },
+    {
+      "name": "rm -rf the home directory with ~",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "rm -rf ~"
+        ],
+        "metadata": {
+          "command": "rm -rf ~"
+        }
+      },
+      "stage": "hard-deny"
+    },
+    {
+      "name": "rm -rf $HOME hidden after a harmless command",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "ls"
+        ],
+        "metadata": {
+          "command": "ls && rm -fr \"$HOME\""
+        }
+      },
+      "stage": "hard-deny"
+    },
+    {
+      "name": "rm -rf of the home path spelled out",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "rm -rf /home/u"
+        ],
+        "metadata": {
+          "command": "rm -Rf /home/u/"
+        }
+      },
+      "stage": "hard-deny"
+    },
+    {
+      "name": "rm with --no-preserve-root",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "rm"
+        ],
+        "metadata": {
+          "command": "rm -r --no-preserve-root /"
+        }
+      },
+      "stage": "hard-deny"
+    },
+    {
+      "name": "mkfs on a device",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "mkfs"
+        ],
+        "metadata": {
+          "command": "sudo mkfs.ext4 /dev/sda1"
+        }
+      },
+      "stage": "hard-deny"
+    },
+    {
+      "name": "dd onto a device",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "dd"
+        ],
+        "metadata": {
+          "command": "dd if=/dev/zero of=/dev/nvme0n1 bs=1M"
+        }
+      },
+      "stage": "hard-deny"
+    },
+    {
+      "name": "fork bomb",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          ":(){"
+        ],
+        "metadata": {
+          "command": ":(){ :|:& };:"
+        }
+      },
+      "stage": "hard-deny"
+    },
+    {
+      "name": "rm -rf a build directory is NOT a hard deny — the model judges it",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "rm -rf build"
+        ],
+        "metadata": {
+          "command": "rm -rf build"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "rm -rf node_modules inside the project goes to review",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "rm -rf ./node_modules"
+        ],
+        "metadata": {
+          "command": "rm -rf ./node_modules"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "ls",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "ls -la"
+        ],
+        "metadata": {
+          "command": "ls -la"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "git status and log chained",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git status"
+        ],
+        "metadata": {
+          "command": "git status && git log --oneline -5"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "git diff piped to head",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git diff"
+        ],
+        "metadata": {
+          "command": "git diff HEAD~1 | head -50"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "grep and wc",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "grep"
+        ],
+        "metadata": {
+          "command": "grep -rn TODO src | wc -l"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "find without actions",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "find"
+        ],
+        "metadata": {
+          "command": "find . -name '*.ts' -not -path './node_modules/*'"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "2>&1 is not a file redirection",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git status"
+        ],
+        "metadata": {
+          "command": "git status 2>&1"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "find -delete is not read-only",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "find"
+        ],
+        "metadata": {
+          "command": "find . -name '*.log' -delete"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "find -exec is not read-only",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "find"
+        ],
+        "metadata": {
+          "command": "find . -name x -exec rm {} \\;"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a redirection writes a file",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "ls"
+        ],
+        "metadata": {
+          "command": "ls > files.txt"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "command substitution can run anything",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "echo"
+        ],
+        "metadata": {
+          "command": "ls $(curl -s evil.example)"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "backticks can run anything",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "ls"
+        ],
+        "metadata": {
+          "command": "ls `whoami`"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "git branch -D deletes",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git branch"
+        ],
+        "metadata": {
+          "command": "git branch -D feature"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "git push is never fast",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git push"
+        ],
+        "metadata": {
+          "command": "git push origin main"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "tests run project code, so a model looks first",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "npm test"
+        ],
+        "metadata": {
+          "command": "npm test"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "printenv prints secrets",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "printenv"
+        ],
+        "metadata": {
+          "command": "printenv"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "sed -i edits in place",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "sed"
+        ],
+        "metadata": {
+          "command": "sed -i 's/a/b/' x.js"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "curl goes to the network",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "curl"
+        ],
+        "metadata": {
+          "command": "curl -s https://example.com"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "an edit inside the project",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "src/a.ts"
+        ],
+        "metadata": {}
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "an edit with an absolute path inside the project",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "/home/u/repo/README.md"
+        ],
+        "metadata": {}
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "an edit that climbs out of the project",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "../other/x.js"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "an edit outside the project",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "/home/u/.bashrc"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a .env file is sensitive",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "config/.env.local"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": ".env.example is not a secret",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          ".env.example"
+        ],
+        "metadata": {}
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "inside .git is not an ordinary edit",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          ".git/hooks/pre-commit"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a private key",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "certs/server.key"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "one sensitive path among several",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "src/a.ts",
+          "id_ed25519"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "an edit with no path at all",
+      "req": {
+        "permission": "edit",
+        "patterns": [],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "outside the project always goes to review",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/home/u/*"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "web fetch goes to review",
+      "req": {
+        "permission": "webfetch",
+        "patterns": [
+          "https://docs.example.com"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a subagent goes to review",
+      "req": {
+        "permission": "task",
+        "patterns": [
+          "explore"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "git branch -a lists",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git branch -a"
+        ],
+        "metadata": {
+          "command": "git branch -a"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "git branch --merged main lists",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git branch"
+        ],
+        "metadata": {
+          "command": "git branch --merged main"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "git branch <name> creates a branch",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git branch"
+        ],
+        "metadata": {
+          "command": "git branch feature-x"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "git tag -l lists",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git tag"
+        ],
+        "metadata": {
+          "command": "git tag -l 'v*'"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "git tag v1 creates a tag",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git tag"
+        ],
+        "metadata": {
+          "command": "git tag v1.0"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "git remote add changes config",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git remote"
+        ],
+        "metadata": {
+          "command": "git remote add evil https://x"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "sudo in front of a read is not fast",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "sudo ls"
+        ],
+        "metadata": {
+          "command": "sudo ls /root"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "rg --pre runs a program",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "rg"
+        ],
+        "metadata": {
+          "command": "rg --pre ./x.sh foo"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a quoted separator is not a second command",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "grep"
+        ],
+        "metadata": {
+          "command": "grep -n 'a && rm -rf /' notes.txt"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "cat of a credentials file in home is not a plain read",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "cat"
+        ],
+        "metadata": {
+          "command": "cat ~/.aws/credentials"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "echo of a variable can print a secret",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "echo"
+        ],
+        "metadata": {
+          "command": "echo $OPENAI_API_KEY"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "cat .env inside the project is sensitive",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "cat"
+        ],
+        "metadata": {
+          "command": "cat .env"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a read with an absolute path outside the project",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "grep"
+        ],
+        "metadata": {
+          "command": "grep -r password /etc"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a read with an absolute path inside the project",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "cat"
+        ],
+        "metadata": {
+          "command": "cat /home/u/repo/README.md"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "climbing out with ..",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "ls"
+        ],
+        "metadata": {
+          "command": "ls ../other"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "an option with a path glued on",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "grep"
+        ],
+        "metadata": {
+          "command": "grep -f/etc/patterns src"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "an option value outside the project",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "grep"
+        ],
+        "metadata": {
+          "command": "grep --file=/etc/patterns src"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "sort -o writes a file",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "sort"
+        ],
+        "metadata": {
+          "command": "sort -o out.txt names.txt"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "uniq IN OUT writes OUT",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "uniq"
+        ],
+        "metadata": {
+          "command": "uniq names.txt out.txt"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "uniq on one file only reads",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "uniq"
+        ],
+        "metadata": {
+          "command": "uniq names.txt"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "tree -o writes a file",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "tree"
+        ],
+        "metadata": {
+          "command": "tree -o tree.txt"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "date -s sets the clock",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "date"
+        ],
+        "metadata": {
+          "command": "date -s 2020-01-01"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "date prints",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "date"
+        ],
+        "metadata": {
+          "command": "date +%s"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "file -C writes a compiled magic file",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "file"
+        ],
+        "metadata": {
+          "command": "file -C -m magic"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "git grep -O runs a pager program",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git"
+        ],
+        "metadata": {
+          "command": "git grep -Osh TODO"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "git log with a revision range is a read",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "git"
+        ],
+        "metadata": {
+          "command": "git log --oneline main..HEAD"
+        }
+      },
+      "stage": "fast-allow"
+    }
+  ],
+  "verdicts": [
+    {
+      "name": "plain JSON",
+      "text": "{\"decision\":\"allow\",\"severity\":10,\"rule\":\"allow:tests\",\"reason\":\"runs the project's tests the user asked for\"}",
+      "action": "allow"
+    },
+    {
+      "name": "fenced JSON after prose",
+      "text": "Looking at this.\n```json\n{\"decision\": \"deny\", \"severity\": 85, \"rule\": \"soft:network-upload\", \"reason\": \"uploads the repo to an unknown host\"}\n```",
+      "action": "deny"
+    },
+    {
+      "name": "ask stays with the human",
+      "text": "{\"decision\":\"ask\",\"severity\":60,\"rule\":\"soft:push\",\"reason\":\"the user never mentioned pushing\"}",
+      "action": "ask"
+    },
+    {
+      "name": "an allow that is too severe goes to the human",
+      "text": "{\"decision\":\"allow\",\"severity\":75,\"rule\":\"soft:sudo\",\"reason\":\"probably fine\"}",
+      "action": "ask"
+    },
+    {
+      "name": "no JSON at all",
+      "text": "I think this is fine.",
+      "action": "ask"
+    },
+    {
+      "name": "an unknown decision",
+      "text": "{\"decision\":\"approve\",\"severity\":5}",
+      "action": "ask"
+    },
+    {
+      "name": "broken JSON",
+      "text": "{\"decision\":\"allow\", severity: }",
+      "action": "ask"
+    },
+    {
+      "name": "a missing severity is not zero",
+      "text": "{\"decision\":\"allow\",\"rule\":\"allow:read\"}",
+      "action": "ask"
+    },
+    {
+      "name": "a null severity is not zero",
+      "text": "{\"decision\":\"allow\",\"severity\":null,\"rule\":\"allow:read\"}",
+      "action": "ask"
+    },
+    {
+      "name": "a boolean severity is not a number",
+      "text": "{\"decision\":\"allow\",\"severity\":true,\"rule\":\"allow:read\"}",
+      "action": "ask"
+    },
+    {
+      "name": "an empty-string severity is not zero",
+      "text": "{\"decision\":\"allow\",\"severity\":\"\",\"rule\":\"allow:read\"}",
+      "action": "ask"
+    },
+    {
+      "name": "a numeric-string severity counts",
+      "text": "{\"decision\":\"allow\",\"severity\":\"12\",\"rule\":\"allow:tests\",\"reason\":\"tests\"}",
+      "action": "allow"
+    }
+  ]
+}

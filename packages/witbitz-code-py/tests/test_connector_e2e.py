@@ -115,7 +115,7 @@ class PyClient:
 
 # ── the two connectors behind one interface ───────────────────────────────────────────────────────────────────────────
 class PyConnector:
-    OPTION_NAMES = {"maxSenders": "max_senders", "maxResponseBytes": "max_response_bytes"}
+    OPTION_NAMES = {"maxSenders": "max_senders", "maxResponseBytes": "max_response_bytes", "autoDir": "auto_dir", "autoPollMs": "auto_poll_ms"}
 
     def __init__(self, rig, timeout_ms, **options):
         self.rig, self.timeout_ms, self.c = rig, timeout_ms, None
@@ -168,7 +168,8 @@ async def conformance(rig: Rig, connector) -> None:
     try:
         await client.start()
         hello = client.hellos()[-1]
-        assert set(hello) == {"t", "ver", "name", "computerId", "k", "ts"} and hello["ver"] == "1"
+        assert set(hello) == {"t", "ver", "name", "computerId", "k", "ts", "caps", "auto"} and hello["ver"] == "1"
+        assert (hello["caps"], hello["auto"]) == (["auto"], []), "both connectors can do Auto mode (test_auto.py has the rest)"
         assert (hello["name"], hello["computerId"]) == ("test-box", "cmp_test") and isinstance(hello["ts"], int)
         assert re.fullmatch(r"[A-Za-z0-9_-]{24}", hello["k"]), "18 random bytes, base64url"
 

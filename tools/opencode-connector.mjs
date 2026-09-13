@@ -15,9 +15,11 @@ import { readFileSync, existsSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
 import { RelayPeer, allowedRequest, allowedEventPath, projectResponse, RELAY_URL } from '../spaces/public/codeRelay.js'
+import { startAutoRunner } from './code-auto-runner.mjs' // Auto mode: permission asks decided here (docs/code-auto-mode.md)
 
 export const VERSION = '1'
 export const PAIRINGS_PATH = process.env.WITBITZ_CODE_PAIRINGS || join(homedir(), '.witbitz', 'code', 'pairings.json')
+const AUTO_DIR = process.env.WITBITZ_CODE_AUTO_DIR || join(homedir(), '.witbitz', 'code') // Auto state (per pairing) + the verdict log
 const DEFAULT_ENV = process.env.OPENCODE_ENV_FILE || join(homedir(), '.opencode-server.env')
 const REQUEST_TIMEOUT_MS = 30_000
 const HELLO_EVERY_MS = 20_000 // the page counts the computer online while a hello arrived in the last 30 s
@@ -69,13 +71,13 @@ function sseReader(onData) {
  * Serve the given pairings. Returns { stop, peers } — `peers` is one RelayPeer per pairing.
  * Options exist for tests: fetchImpl, WebSocketImpl, flushMs, log.
  */
-export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE } = {}) {
+export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000 } = {}) {
   const running = []
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes }))
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs }))
   return { peers: running.map((r) => r.peer), stop: () => { for (const r of running) r.stop() } }
 }
 
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes }) {
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs }) {
   const name = pairing.name || hostname()
   const base = String(pairing.opencodeUrl || 'http://127.0.0.1:4096').replace(/\/+$/, '')
   const password = () => pairing.password || parseEnvPassword(existsSync(pairing.envFile || DEFAULT_ENV) ? readFileSync(pairing.envFile || DEFAULT_ENV, 'utf8') : '')
@@ -83,6 +85,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   const inflight = new Map() // request id → AbortController
   const subs = new Map() // event path → { ctrl, clients: Map(client id → last renewed), buffer, timer }
   let helloTimer = 0
+  let auto = null // Auto mode's loop for this pairing — created before the relay opens, so the first hello can list it
   // ★ REPLAY ACROSS RESTARTS. The frame layer drops a replay only while this process remembers the sender, so a sealed
   //   request recorded earlier (by anyone on the path — the relay included) could be re-sent after a restart and run
   //   again. Each socket therefore announces a fresh random nonce inside its sealed hello, and a request must carry the
@@ -103,7 +106,8 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     onEvict: () => { freshNonce(); hello() },
   })
 
-  function hello() { if (nonce) peer.send({ t: 'hello', ver: VERSION, name, computerId: pairing.computerId || '', k: nonce, ts: Date.now() }) }
+  // caps: what this connector can do beyond the requests — a page shows the Auto switch only when `auto` is here.
+  function hello() { if (nonce) peer.send({ t: 'hello', ver: VERSION, name, computerId: pairing.computerId || '', k: nonce, ts: Date.now(), caps: ['auto'], auto: auto ? auto.sessions() : [] }) }
 
   async function handle(m) {
     if (!m || typeof m.t !== 'string') return
@@ -112,6 +116,9 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     if (m.t === 'cancel') { if (current) { const c = inflight.get(m.id); if (c) c.abort() } return }
     if (m.t === 'sub') { if (current) subscribe(m.p, m.c); return }
     if (m.t === 'unsub') { if (current) unsubscribe(m.p, m.c); return }
+    // Auto mode on/off for one session — nonce-checked like a request (a recording cannot switch it). No new power: a page
+    // that can switch Auto could already answer the same asks itself.
+    if (m.t === 'auto') { if (current && auto && auto.setAuto(m.sid, m.dir, !!m.on)) hello(); return }
     if (m.t !== 'req') return
     const id = typeof m.id === 'string' ? m.id : ''
     if (!id) return
@@ -206,12 +213,19 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     }
   }, 15_000)
   helloTimer = setInterval(() => { if (peer.peers >= 2) hello() }, HELLO_EVERY_MS)
+  const safeId = String(pairing.computerId || 'default').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+  auto = startAutoRunner({
+    base, auth, fetchImpl, log, pollMs: autoPollMs,
+    statePath: join(autoDir, `auto-${safeId}.json`), logPath: join(autoDir, 'auto-log.jsonl'),
+    onVerdict: (v) => peer.send({ t: 'autoverdict', ...v, ts: Date.now() }),
+  })
 
   await peer.start()
   return {
     peer,
     stop: () => {
       clearInterval(sweep); clearInterval(helloTimer)
+      if (auto) auto.stop()
       for (const k of [...subs.keys()]) unsubscribe(k, ALL)
       for (const c of inflight.values()) { try { c.abort() } catch { /* */ } }
       peer.stop()
