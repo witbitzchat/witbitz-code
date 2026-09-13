@@ -7,13 +7,14 @@
 //
 //   node tools/opencode-connector.mjs            run every pairing in ~/.witbitz/code/pairings.json (until Ctrl-C)
 //   node tools/opencode-connector.mjs --status   list the pairings (names only — never a secret)
+//   … --parent <pid>                              stop when that process is gone (opencode-serve.sh passes its own)
 //
 // It serves ONLY the calls the Code page makes (codeRelay.js `allowedRequest`): OpenCode can run shell commands here, so a
 // leaked secret must not unlock more than the page itself can do.
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
-import { RelayPeer, allowedRequest, allowedEventPath, RELAY_URL } from '../spaces/public/codeRelay.js'
+import { RelayPeer, allowedRequest, allowedEventPath, projectResponse, RELAY_URL } from '../spaces/public/codeRelay.js'
 
 export const VERSION = '1'
 export const PAIRINGS_PATH = process.env.WITBITZ_CODE_PAIRINGS || join(homedir(), '.witbitz', 'code', 'pairings.json')
@@ -143,7 +144,9 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
         }
       }
       chunks.push(dec.decode())
-      await reply(r.status, chunks.join(''))
+      // /config and /config/providers carry API keys: rebuilt from an allowlist of fields before they leave (codeRelay.js).
+      const out = projectResponse(m.m, m.p, r.status, chunks.join(''))
+      await reply(out.st, out.b)
     } catch (e) {
       if (timedOut) return reply(504, { error: `OpenCode did not answer within ${Math.round(requestTimeoutMs / 1000)} s` })
       if (ctrl.signal.aborted) return reply(499, { error: 'cancelled' })
@@ -216,6 +219,17 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   }
 }
 
+/** Stop when the process that started us is gone. opencode-serve.sh passes `--parent $$`: killed with -9 its trap never
+ *  runs, and the connector would go on holding a sealed channel for an OpenCode nobody supervises. The signal is a
+ *  CHANGED ppid (re-parented to init or a subreaper) — never a probe of the old pid, which a reused pid would fool.
+ *  No parent given (a connector started by hand) → no watch. Returns a stop function. */
+export function watchParent({ parent, getPpid = () => process.ppid, onGone, everyMs = 2000 }) {
+  if (!Number.isInteger(parent) || parent <= 1) return () => {}
+  const t = setInterval(() => { if (getPpid() !== parent) { clearInterval(t); onGone() } }, everyMs)
+  if (t.unref) t.unref()
+  return () => clearInterval(t)
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const args = argv
   const pi = args.indexOf('--port')
@@ -230,6 +244,8 @@ export async function main(argv = process.argv.slice(2)) {
   console.error(`opencode-connector: serving ${pairings.length} pairing${pairings.length === 1 ? '' : 's'} through the sealed relay (Ctrl-C to stop)`)
   const bye = () => { c.stop(); process.exit(0) }
   process.on('SIGINT', bye); process.on('SIGTERM', bye)
+  const pp = args.indexOf('--parent')
+  watchParent({ parent: pp >= 0 ? Number(args[pp + 1]) : 0, onGone: () => { console.error('opencode-connector: the script that started me is gone — stopping'); bye() } })
 }
 
 // (WITBITZ_CODE_BUNDLED is defined at bundle time: inside witbitz-code.mjs every module shares one import.meta.url.)

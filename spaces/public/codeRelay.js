@@ -265,7 +265,8 @@ const ALLOW = [
   ['GET', '/experimental/session'],
   ['GET', '/agent'],
   ['GET', '/api/model'],
-  ['GET', '/config'],
+  ['GET', '/config'],           // answered through projectResponse — never as OpenCode sent it
+  ['GET', '/config/providers'], // the model menu: what is CONNECTED on this computer (projectResponse, no keys)
   ['POST', '/session'],
   ['GET', `/session/${SEG}/message`],
   ['POST', `/session/${SEG}/message`],
@@ -294,4 +295,83 @@ export function allowedEventPath(p) {
   if (s === '/event') return true
   const m = s.match(/^\/event\?directory=([^&#]*)$/)
   return !!m
+}
+
+// ── what the connector gives back ────────────────────────────────────────────────────────────────────────────────
+// Two routes the page needs answer with SECRETS in them, measured on opencode 1.18:
+//   • GET /config resolves every `{env:…}` in the provider options — the owner's TrustedRouter key came back in plain text.
+//   • GET /config/providers carries each connected provider's stored API key in `key` (from `opencode auth login`).
+// The page needs names, not credentials, and the key must never leave the computer. So the connector does not pass these
+// answers through: it rebuilds them from an ALLOWLIST of fields (a blocklist would miss the next field OpenCode adds).
+// Anything that does not parse, or is not a success, goes back as a plain error — never the raw body.
+const PROJECTED = new Set(['/config', '/config/providers'])
+const MAX_PROVIDERS = 100, MAX_MODELS = 2000
+const s200 = (v) => (typeof v === 'string' ? v.slice(0, 200) : undefined)
+const dict = () => Object.create(null) // a model named "__proto__" is a key like any other
+const MEDIA = ['text', 'image', 'pdf', 'audio', 'video']
+function projectInput(caps) {
+  const input = caps && typeof caps === 'object' ? caps.input : null
+  if (Array.isArray(input)) return MEDIA.filter((k) => input.includes(k))
+  if (input && typeof input === 'object') return MEDIA.filter((k) => input[k] === true)
+  return undefined
+}
+function projectModels(models, keep) {
+  const out = dict()
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return out
+  for (const k of Object.keys(models).slice(0, MAX_MODELS)) {
+    const id = s200(k)
+    if (!id) continue
+    const m = models[k] && typeof models[k] === 'object' ? models[k] : {}
+    out[id] = keep(m)
+  }
+  return out
+}
+/** GET /config → the declared model names and the default model. Nothing else (no options, no MCP, no permissions). */
+function projectConfig(c) {
+  const out = {}
+  if (s200(c.model)) out.model = s200(c.model)
+  if (s200(c.small_model)) out.small_model = s200(c.small_model)
+  const provider = dict()
+  const src = c.provider && typeof c.provider === 'object' && !Array.isArray(c.provider) ? c.provider : {}
+  for (const pid of Object.keys(src).slice(0, MAX_PROVIDERS)) {
+    if (!s200(pid)) continue
+    const p = src[pid] && typeof src[pid] === 'object' ? src[pid] : {}
+    const entry = { models: projectModels(p.models, (m) => (s200(m.name) ? { name: s200(m.name) } : {})) }
+    if (s200(p.name)) entry.name = s200(p.name)
+    provider[s200(pid)] = entry
+  }
+  out.provider = provider
+  return out
+}
+/** GET /config/providers → for each connected provider: id, name, source, and its models' names and input kinds. */
+function projectProviders(d) {
+  const providers = (Array.isArray(d.providers) ? d.providers : []).slice(0, MAX_PROVIDERS).filter((p) => p && s200(p.id)).map((p) => {
+    const entry = { id: s200(p.id), models: projectModels(p.models, (m) => {
+      const o = {}
+      if (s200(m.name)) o.name = s200(m.name)
+      if (s200(m.status)) o.status = s200(m.status)
+      const input = projectInput(m.capabilities)
+      if (input) o.input = input
+      return o
+    }) }
+    if (s200(p.name)) entry.name = s200(p.name)
+    if (s200(p.source)) entry.source = s200(p.source)
+    return entry
+  })
+  const def = dict()
+  if (d.default && typeof d.default === 'object' && !Array.isArray(d.default)) {
+    for (const k of Object.keys(d.default).slice(0, MAX_PROVIDERS)) if (s200(k) && s200(d.default[k])) def[s200(k)] = s200(d.default[k])
+  }
+  return { providers, default: def }
+}
+/** The answer the connector sends for `method path` — projected for the routes above, untouched otherwise.
+ *  Returns { st, b } (status, body text). */
+export function projectResponse(method, pathWithQuery, status, text) {
+  const path = String(pathWithQuery || '').split('?')[0]
+  if (String(method || '').toUpperCase() !== 'GET' || !PROJECTED.has(path)) return { st: status, b: text }
+  if (!(status >= 200 && status < 300)) return { st: status, b: JSON.stringify({ error: `OpenCode answered ${status} for ${path}` }) }
+  let v
+  try { v = JSON.parse(text) } catch { v = null }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return { st: 502, b: JSON.stringify({ error: `OpenCode sent an unexpected answer for ${path}` }) }
+  return { st: status, b: JSON.stringify(path === '/config' ? projectConfig(v) : projectProviders(v)) }
 }

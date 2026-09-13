@@ -2350,6 +2350,9 @@ var ALLOW = [
   ["GET", "/agent"],
   ["GET", "/api/model"],
   ["GET", "/config"],
+  // answered through projectResponse — never as OpenCode sent it
+  ["GET", "/config/providers"],
+  // the model menu: what is CONNECTED on this computer (projectResponse, no keys)
   ["POST", "/session"],
   ["GET", `/session/${SEG}/message`],
   ["POST", `/session/${SEG}/message`],
@@ -2374,6 +2377,78 @@ function allowedEventPath(p) {
   if (s === "/event") return true;
   const m = s.match(/^\/event\?directory=([^&#]*)$/);
   return !!m;
+}
+var PROJECTED = /* @__PURE__ */ new Set(["/config", "/config/providers"]);
+var MAX_PROVIDERS = 100;
+var MAX_MODELS = 2e3;
+var s200 = (v) => typeof v === "string" ? v.slice(0, 200) : void 0;
+var dict2 = () => /* @__PURE__ */ Object.create(null);
+var MEDIA = ["text", "image", "pdf", "audio", "video"];
+function projectInput(caps) {
+  const input = caps && typeof caps === "object" ? caps.input : null;
+  if (Array.isArray(input)) return MEDIA.filter((k) => input.includes(k));
+  if (input && typeof input === "object") return MEDIA.filter((k) => input[k] === true);
+  return void 0;
+}
+function projectModels(models, keep) {
+  const out = dict2();
+  if (!models || typeof models !== "object" || Array.isArray(models)) return out;
+  for (const k of Object.keys(models).slice(0, MAX_MODELS)) {
+    const id = s200(k);
+    if (!id) continue;
+    const m = models[k] && typeof models[k] === "object" ? models[k] : {};
+    out[id] = keep(m);
+  }
+  return out;
+}
+function projectConfig(c) {
+  const out = {};
+  if (s200(c.model)) out.model = s200(c.model);
+  if (s200(c.small_model)) out.small_model = s200(c.small_model);
+  const provider = dict2();
+  const src = c.provider && typeof c.provider === "object" && !Array.isArray(c.provider) ? c.provider : {};
+  for (const pid of Object.keys(src).slice(0, MAX_PROVIDERS)) {
+    if (!s200(pid)) continue;
+    const p = src[pid] && typeof src[pid] === "object" ? src[pid] : {};
+    const entry = { models: projectModels(p.models, (m) => s200(m.name) ? { name: s200(m.name) } : {}) };
+    if (s200(p.name)) entry.name = s200(p.name);
+    provider[s200(pid)] = entry;
+  }
+  out.provider = provider;
+  return out;
+}
+function projectProviders(d) {
+  const providers = (Array.isArray(d.providers) ? d.providers : []).slice(0, MAX_PROVIDERS).filter((p) => p && s200(p.id)).map((p) => {
+    const entry = { id: s200(p.id), models: projectModels(p.models, (m) => {
+      const o = {};
+      if (s200(m.name)) o.name = s200(m.name);
+      if (s200(m.status)) o.status = s200(m.status);
+      const input = projectInput(m.capabilities);
+      if (input) o.input = input;
+      return o;
+    }) };
+    if (s200(p.name)) entry.name = s200(p.name);
+    if (s200(p.source)) entry.source = s200(p.source);
+    return entry;
+  });
+  const def = dict2();
+  if (d.default && typeof d.default === "object" && !Array.isArray(d.default)) {
+    for (const k of Object.keys(d.default).slice(0, MAX_PROVIDERS)) if (s200(k) && s200(d.default[k])) def[s200(k)] = s200(d.default[k]);
+  }
+  return { providers, default: def };
+}
+function projectResponse(method, pathWithQuery, status, text) {
+  const path = String(pathWithQuery || "").split("?")[0];
+  if (String(method || "").toUpperCase() !== "GET" || !PROJECTED.has(path)) return { st: status, b: text };
+  if (!(status >= 200 && status < 300)) return { st: status, b: JSON.stringify({ error: `OpenCode answered ${status} for ${path}` }) };
+  let v;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    v = null;
+  }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return { st: 502, b: JSON.stringify({ error: `OpenCode sent an unexpected answer for ${path}` }) };
+  return { st: status, b: JSON.stringify(path === "/config" ? projectConfig(v) : projectProviders(v)) };
 }
 
 // tools/opencode-pair.mjs
@@ -2824,7 +2899,8 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
         }
       }
       chunks.push(dec2.decode());
-      await reply(r.status, chunks.join(""));
+      const out = projectResponse(m.m, m.p, r.status, chunks.join(""));
+      await reply(out.st, out.b);
     } catch (e) {
       if (timedOut) return reply(504, { error: `OpenCode did not answer within ${Math.round(requestTimeoutMs / 1e3)} s` });
       if (ctrl.signal.aborted) return reply(499, { error: "cancelled" });

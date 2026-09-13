@@ -29,6 +29,20 @@ PASSWORD = "local-only-password"
 BIG = "z" * (192 * 1024 * 2 + 123) + "😀ünïcødé" * 1000  # longer than two frames, with astral characters to split
 
 
+# What OpenCode answers for /config and /config/providers, with a SECRET where it really puts credentials (measured,
+# opencode 1.18: resolved `{env:…}` provider options, and each connected provider's stored `key`).
+LEAKY = {
+    "/config": {"model": "trustedrouter/deepseek/deepseek-v4-flash", "mcp": {"gh": {"environment": {"GITHUB_TOKEN": "SECRET-mcp"}}},
+                "provider": {"trustedrouter": {"name": "TrustedRouter", "options": {"apiKey": "SECRET-resolved"},
+                                               "models": {"deepseek/deepseek-v4-flash": {"name": "DeepSeek V4 Flash"}}}}},
+    "/config/providers": {"providers": [{"id": "anthropic", "name": "Anthropic", "source": "api", "key": "SECRET-key",
+                                         "options": {"headers": {"x": "SECRET-h"}},
+                                         "models": {"claude-sonnet-4-6": {"name": "Claude Sonnet 4.6", "headers": {"x-api-key": "SECRET-mh"},
+                                                                          "capabilities": {"input": {"text": True, "image": True}}}}}],
+                          "default": {"anthropic": "claude-sonnet-4-6"}},
+}
+
+
 # ── the relay ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 @dataclass
 class FakeRelay:
@@ -134,6 +148,8 @@ class FakeOpenCode:
                 path = self.path.split("?")[0]
                 if path == "/agent":
                     return self._send(200, json.dumps([{"name": "build"}]))
+                if path in LEAKY:  # a credential planted where OpenCode really puts one (spaces/test/leakyOpenCode.mjs)
+                    return self._send(200, json.dumps(LEAKY[path]))
                 if path == "/session/ses_big/message":
                     return self._send(200, BIG)
                 if path == "/session/ses_1/message" and self.command == "POST":

@@ -516,7 +516,8 @@ _ALLOW = [
         ("GET", "/experimental/session"),
         ("GET", "/agent"),
         ("GET", "/api/model"),
-        ("GET", "/config"),
+        ("GET", "/config"),  # answered through project_response — never as OpenCode sent it
+        ("GET", "/config/providers"),  # the model menu: what is CONNECTED on this computer (project_response, no keys)
         ("POST", "/session"),
         ("GET", f"/session/{_SEG}/message"),
         ("POST", f"/session/{_SEG}/message"),
@@ -548,3 +549,110 @@ def allowed_event_path(p: Any) -> bool:
     """The event-stream path a `sub` may name: /event, optionally ?directory=… (and nothing else)."""
     s = _js.js_string(p if _js.truthy(p) else "")
     return s == "/event" or bool(_EVENT.fullmatch(s))
+
+
+# ── what the connector gives back ─────────────────────────────────────────────────────────────────────────────────────
+# Two routes the page needs answer with SECRETS in them (measured, opencode 1.18): GET /config resolves every `{env:…}` in
+# the provider options, and GET /config/providers carries each connected provider's stored API key in `key`. The page
+# needs names, not credentials, so the connector rebuilds those answers from an ALLOWLIST of fields — codeRelay.js
+# `projectResponse`, which this mirrors field for field.
+_PROJECTED = {"/config", "/config/providers"}
+_MAX_PROVIDERS, _MAX_MODELS = 100, 2000
+_MEDIA = ["text", "image", "pdf", "audio", "video"]
+
+
+def _s200(v: Any) -> str | None:
+    return _js.utf16_slice(v, 0, 200) if isinstance(v, str) else None
+
+
+def _project_input(caps: Any) -> list | None:
+    inp = caps.get("input") if isinstance(caps, dict) else None
+    if isinstance(inp, list):
+        return [k for k in _MEDIA if k in inp]
+    if isinstance(inp, dict):
+        return [k for k in _MEDIA if inp.get(k) is True]
+    return None
+
+
+def _project_models(models: Any, keep: Callable[[dict], dict]) -> dict:
+    out: dict = {}
+    if not isinstance(models, dict):
+        return out
+    for k in list(models.keys())[:_MAX_MODELS]:
+        mid = _s200(k)
+        if not mid:
+            continue
+        m = models[k] if isinstance(models[k], dict) else {}
+        out[mid] = keep(m)
+    return out
+
+
+def _named(m: dict) -> dict:
+    return {"name": _s200(m.get("name"))} if _s200(m.get("name")) else {}
+
+
+def _project_config(c: dict) -> dict:
+    out: dict = {}
+    if _s200(c.get("model")):
+        out["model"] = _s200(c.get("model"))
+    if _s200(c.get("small_model")):
+        out["small_model"] = _s200(c.get("small_model"))
+    src = c.get("provider") if isinstance(c.get("provider"), dict) else {}
+    provider: dict = {}
+    for pid in list(src.keys())[:_MAX_PROVIDERS]:
+        if not _s200(pid):
+            continue
+        p = src[pid] if isinstance(src[pid], dict) else {}
+        entry: dict = {"models": _project_models(p.get("models"), _named)}
+        if _s200(p.get("name")):
+            entry["name"] = _s200(p.get("name"))
+        provider[_s200(pid)] = entry
+    out["provider"] = provider
+    return out
+
+
+def _provider_model(m: dict) -> dict:
+    o: dict = {}
+    if _s200(m.get("name")):
+        o["name"] = _s200(m.get("name"))
+    if _s200(m.get("status")):
+        o["status"] = _s200(m.get("status"))
+    inp = _project_input(m.get("capabilities"))
+    if inp is not None:
+        o["input"] = inp
+    return o
+
+
+def _project_providers(d: dict) -> dict:
+    providers = []
+    for p in (d.get("providers") if isinstance(d.get("providers"), list) else [])[:_MAX_PROVIDERS]:
+        if not isinstance(p, dict) or not _s200(p.get("id")):
+            continue
+        entry: dict = {"id": _s200(p.get("id")), "models": _project_models(p.get("models"), _provider_model)}
+        if _s200(p.get("name")):
+            entry["name"] = _s200(p.get("name"))
+        if _s200(p.get("source")):
+            entry["source"] = _s200(p.get("source"))
+        providers.append(entry)
+    default: dict = {}
+    if isinstance(d.get("default"), dict):
+        for k in list(d["default"].keys())[:_MAX_PROVIDERS]:
+            if _s200(k) and _s200(d["default"][k]):
+                default[_s200(k)] = _s200(d["default"][k])
+    return {"providers": providers, "default": default}
+
+
+def project_response(method: Any, path_with_query: Any, status: int, text: str) -> tuple[int, str]:
+    """The answer the connector sends for `method path` — projected for the routes above, untouched otherwise."""
+    path = _js.js_string(path_with_query if _js.truthy(path_with_query) else "").split("?")[0]
+    if _js.js_string(method if _js.truthy(method) else "").upper() != "GET" or path not in _PROJECTED:
+        return status, text
+    if not 200 <= status < 300:
+        return status, _js.stringify({"error": f"OpenCode answered {status} for {path}"})
+    try:
+        v = _js.parse(text)
+    except Exception:
+        v = None
+    if not isinstance(v, dict):
+        return 502, _js.stringify({"error": f"OpenCode sent an unexpected answer for {path}"})
+    return status, _js.stringify(_project_config(v) if path == "/config" else _project_providers(v))

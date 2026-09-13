@@ -6,8 +6,9 @@ import assert from 'node:assert/strict'
 import { fakeRelay } from './fakeRelay.mjs'
 import {
   deriveRelay, newRelaySecret, b64u, unb64u, makeSealer, makeOpener, peersOf, chunkMessage, makeReassembler,
-  RelayPeer, allowedRequest, allowedEventPath, CHUNK,
+  RelayPeer, allowedRequest, allowedEventPath, projectResponse, CHUNK,
 } from '../public/codeRelay.js'
+import { LEAKY_PROVIDERS, LEAKY_CONFIG } from './leakyOpenCode.mjs'
 
 export const VECTORS = {
   secret: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8', // bytes 0x00..0x1f
@@ -102,7 +103,7 @@ test('reassembly refuses a message larger than the total cap', () => {
 
 test('the allowlist admits exactly the calls the Code section makes, and nothing that looks like them', () => {
   const yes = [
-    ['GET', '/experimental/session?archived=true'], ['GET', '/agent'], ['GET', '/api/model'], ['GET', '/config'],
+    ['GET', '/experimental/session?archived=true'], ['GET', '/agent'], ['GET', '/api/model'], ['GET', '/config'], ['GET', '/config/providers'],
     ['POST', '/session'], ['GET', '/session/ses_abc123/message?directory=%2Fhome%2Fu'], ['POST', '/session/ses_abc/message'],
     ['POST', '/session/ses_abc/abort'], ['POST', '/session/ses_abc/permissions/per_1'], ['PATCH', '/session/ses_abc'],
     ['DELETE', '/session/ses_abc?directory=%2Fx'],
@@ -256,4 +257,39 @@ test('RelayPeer.start() twice opens one socket, not two', async (t) => {
 test('send() resolves false with no open socket', async () => {
   const p = new RelayPeer({ secret: newRelaySecret(), role: 'client', relay: 'ws://127.0.0.1:9' })
   assert.equal(await p.send({ t: 'req' }), false)
+})
+
+// ★ KEYS NEVER LEAVE THE COMPUTER. Measured on opencode 1.18: GET /config resolved `{env:TRUSTEDROUTER_API_KEY}` into
+// the owner's key in plain text, and GET /config/providers returns every stored credential in `key`. The connector
+// rebuilds both answers from an allowlist of fields; these fixtures plant the secret everywhere OpenCode could put it.
+test('/config/providers comes back as names and input kinds only — no key, header, option or URL survives', () => {
+  const r = projectResponse('GET', '/config/providers?directory=%2Fhome%2Fu', 200, JSON.stringify(LEAKY_PROVIDERS))
+  assert.equal(r.st, 200)
+  assert.ok(!r.b.includes('SECRET'), r.b)
+  assert.deepEqual(JSON.parse(r.b), {
+    providers: [
+      { id: 'anthropic', name: 'Anthropic', source: 'api', models: { 'claude-sonnet-4-6': { name: 'Claude Sonnet 4.6', status: 'active', input: ['text', 'image', 'pdf'] } } },
+      { id: 'trustedrouter', name: 'TrustedRouter', source: 'config', models: { 'deepseek/deepseek-v4-flash': { name: 'DeepSeek V4 Flash', input: ['text'] }, 'old/model': { name: 'Old', status: 'deprecated' }, __proto__x: {} } },
+    ],
+    default: { anthropic: 'claude-sonnet-4-6', trustedrouter: 'deepseek/deepseek-v4-flash' },
+  })
+})
+
+test('/config comes back as the default model and the declared model names — nothing else', () => {
+  const r = projectResponse('GET', '/config', 200, JSON.stringify(LEAKY_CONFIG))
+  assert.ok(!r.b.includes('SECRET') && !r.b.includes('baseURL') && !r.b.includes('mcp'), r.b)
+  assert.deepEqual(JSON.parse(r.b), {
+    model: 'trustedrouter/deepseek/deepseek-v4-flash',
+    provider: { trustedrouter: { name: 'TrustedRouter', models: { 'deepseek/deepseek-v4-flash': { name: 'DeepSeek V4 Flash' }, 'anthropic/claude-opus-5': {} } } },
+  })
+})
+
+test('a projected route that fails or does not parse never passes its raw body; other routes are untouched', () => {
+  const err = projectResponse('GET', '/config/providers', 500, 'boom SECRET-in-stack')
+  assert.equal(err.st, 500); assert.ok(!err.b.includes('SECRET'))
+  const junk = projectResponse('GET', '/config', 200, 'not json SECRET')
+  assert.equal(junk.st, 502); assert.ok(!junk.b.includes('SECRET'))
+  assert.equal(projectResponse('GET', '/config', 200, '[1,2]').st, 502, 'an array is not a config')
+  assert.deepEqual(projectResponse('GET', '/agent', 200, '[{"name":"build"}]'), { st: 200, b: '[{"name":"build"}]' })
+  assert.deepEqual(projectResponse('POST', '/config', 200, 'x'), { st: 200, b: 'x' }, 'only GET is projected (POST /config is not on the allowlist anyway)')
 })

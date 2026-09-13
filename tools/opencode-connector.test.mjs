@@ -5,7 +5,8 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { fakeRelay } from '../spaces/test/fakeRelay.mjs'
 import { RelayPeer, newRelaySecret, CHUNK } from '../spaces/public/codeRelay.js'
-import { startConnector, parseEnvPassword, pairingsForPort } from './opencode-connector.mjs'
+import { LEAKY_PROVIDERS, LEAKY_CONFIG } from '../spaces/test/leakyOpenCode.mjs'
+import { startConnector, parseEnvPassword, pairingsForPort, watchParent } from './opencode-connector.mjs'
 
 const PASSWORD = 'local-only-password'
 const until = async (fn, ms = 4000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, 15)) } return false }
@@ -23,6 +24,8 @@ async function fakeOpenCode() {
     const json = (o, st = 200) => { res.writeHead(st, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)) }
     const path = req.url.split('?')[0]
     if (path === '/agent') return json([{ name: 'build' }])
+    if (path === '/config/providers') return json(LEAKY_PROVIDERS)
+    if (path === '/config') return json(LEAKY_CONFIG)
     if (path === '/session/ses_big/message') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(big) }
     if (path === '/session/ses_1/message' && req.method === 'POST') return json({ echoed: JSON.parse(body) })
     if (path === '/session/ses_slow/message') { res.on('close', () => seen.push({ aborted: '/session/ses_slow/message' })); return } // never answers; res 'close' = the caller went away (req 'close' already fired once the body was read)
@@ -68,6 +71,23 @@ async function rig(t, { opencodeUrl, connectorOptions = {} } = {}) {
   }
   return { relay, oc, secret, client, got, call, connector, nonce, restart: async () => { connector.stop(); await new Promise((r) => setTimeout(r, 100)) ; const c2 = await startConnector({ pairings: [{ name: 'test-box', computerId: 'cmp_test', secret, relay: relay.url(), opencodeUrl: opencodeUrl || oc.url, password: PASSWORD }], flushMs: 40, log: () => {} }); t.after(() => c2.stop()); return c2 } }
 }
+
+test('watchParent: a re-parented connector stops itself (its supervisor was killed with -9, so no trap ran)', async () => {
+  let ppid = 4242, gone = 0
+  const stop = watchParent({ parent: 4242, getPpid: () => ppid, onGone: () => gone++, everyMs: 10 })
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(gone, 0, 'still under its parent')
+  ppid = 1 // re-parented to init (or a subreaper)
+  assert.ok(await until(() => gone === 1), 'noticed')
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(gone, 1, 'once, not on every tick')
+  stop()
+  // no --parent (a connector started by hand) → no watch at all
+  let called = false
+  watchParent({ parent: 0, getPpid: () => 1, onGone: () => { called = true }, everyMs: 10 })()
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(called, false)
+})
 
 test('the env file password is read the way a shell would read it', () => {
   assert.equal(parseEnvPassword('A=1\nOPENCODE_SERVER_PASSWORD=first\nexport OPENCODE_SERVER_PASSWORD="second"\n'), 'second')
@@ -249,4 +269,16 @@ test('pairingsForPort uses the scheme\'s default port', () => {
   assert.deepEqual(pairingsForPort(P, 443).map((p) => p.name), ['a'])
   assert.deepEqual(pairingsForPort(P, 80).map((p) => p.name), ['b'])
   assert.deepEqual(pairingsForPort(P, 4096).map((p) => p.name), ['c'])
+})
+
+test('KEYS: /config and /config/providers reach the page without a single credential in them', async (t) => {
+  const { call } = await rig(t)
+  for (const p of ['/config', '/config/providers', '/config/providers?directory=%2Fhome%2Fu']) {
+    const r = await call('GET', p)
+    assert.equal(r.st, 200, p)
+    assert.ok(!r.b.includes('SECRET'), `${p}: ${r.b}`)
+  }
+  const prov = JSON.parse((await call('GET', '/config/providers')).b)
+  assert.deepEqual(prov.providers.map((x) => x.id), ['anthropic', 'trustedrouter'])
+  assert.equal(prov.default.anthropic, 'claude-sonnet-4-6')
 })

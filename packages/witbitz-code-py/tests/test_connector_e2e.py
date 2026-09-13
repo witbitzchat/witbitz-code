@@ -186,6 +186,13 @@ async def conformance(rig: Rig, connector) -> None:
         r = await client.call("GET", "/agent")
         assert (r["st"], json.loads(r["b"])) == (200, [{"name": "build"}])
         assert rig.hits("/agent")[-1]["auth"] == AUTH, "the password never travels — the connector adds it"
+
+        # KEYS: the two catalog answers leave the computer rebuilt from an allowlist — no credential in either.
+        for path in ("/config", "/config/providers"):
+            r = await client.call("GET", path)
+            assert r["st"] == 200 and "SECRET" not in r["b"], (path, r)
+        assert json.loads((await client.call("GET", "/config/providers"))["b"])["providers"][0]["models"] == {
+            "claude-sonnet-4-6": {"name": "Claude Sonnet 4.6", "input": ["text", "image"]}}
         for p in ("/session/ses_1/shell", "/session/./message", "/session/.hidden/message", "/session/../config"):
             assert (await client.call("POST" if p.endswith("shell") else "GET", p))["st"] == 403, p
         assert (await client.call("GET", "/session/ses.with.dots_1/message"))["st"] == 200, "dots inside a segment are fine"

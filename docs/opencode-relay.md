@@ -156,7 +156,8 @@ Only what the section calls — enumerated from `opencodeApp.js`. Anything else 
 OpenCode can run shell commands on the computer; a leaked `S` must not unlock more than the page itself can do.
 
 ```
-GET    /experimental/session            (query: archived)        GET  /agent        GET /api/model      GET /config
+GET    /experimental/session            (query: archived)        GET  /agent        GET /api/model
+GET    /config/providers  GET /config    → ANSWERED THROUGH A PROJECTION (below), never passed through
 GET    /session/:id/message                                       POST /session
 POST   /session/:id/message             POST /session/:id/abort   POST /session/:id/permissions/:permID
 PATCH  /session/:id                     DELETE /session/:id
@@ -165,6 +166,19 @@ GET    /event                           → never proxied as HTTP; `sub` starts 
 ```
 
 The `directory` query parameter passes through (sessions are project-scoped).
+
+**Keys never leave the computer — the two projected answers** (found 2026-09-13, while testing a freshly set-up machine).
+Measured on opencode 1.18: `GET /config` returns the provider options with every `{env:…}` RESOLVED — the owner's
+TrustedRouter key came back in plain text — and `GET /config/providers` returns each connected provider's stored API key
+in `key`. Until then the connector forwarded `/config` as-is, so each catalog load carried the key, sealed, to the page.
+The connector now rebuilds both answers from an allowlist of fields (`codeRelay.js projectResponse`, mirrored by
+`relay.project_response`): `/config` → `{model, small_model, provider: {id: {name, models: {id: {name}}}}}`;
+`/config/providers` → `{providers: [{id, name, source, models: {id: {name, status, input}}}], default}`. A failed or
+unparseable answer goes back as a plain error, never the raw body. The page builds its model menu from
+`/config/providers` (what is CONNECTED — `/api/model` lists what OpenCode merely knows about: 61 dead OpenAI models on one
+box, none of the logged-in providers on another). Against a connector that predates this (403) the page falls back to
+`/api/model` and does NOT ask for `/config` through the relay. The chosen model is remembered per computer, on the device,
+and is no longer an account-synced setting once a computer is paired.
 
 **The folder picker** (added 2026-09-13, owner: "the default should be ~/"). New session opens a sheet at the
 computer's home (`GET /path` → `home`) and creates the session with `POST /session?directory=<chosen>`. Browsing is

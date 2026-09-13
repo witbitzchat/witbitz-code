@@ -23,6 +23,7 @@ from witbitz_code.relay import (
     derive_relay_bytes,
     new_relay_secret,
     peers_of,
+    project_response,
     unb64u,
 )
 
@@ -271,7 +272,7 @@ def test_reassembly_caps_and_junk():
 
 # ── the allowlist ─────────────────────────────────────────────────────────────────────────────────────────────────────
 YES = [
-    ["GET", "/experimental/session?archived=true"], ["GET", "/agent"], ["GET", "/api/model"], ["GET", "/config"],
+    ["GET", "/experimental/session?archived=true"], ["GET", "/agent"], ["GET", "/api/model"], ["GET", "/config"], ["GET", "/config/providers"],
     ["POST", "/session"], ["GET", "/session/ses_abc123/message?directory=%2Fhome%2Fu"], ["POST", "/session/ses_abc/message"],
     ["POST", "/session/ses_abc/abort"], ["POST", "/session/ses_abc/permissions/per_1"], ["PATCH", "/session/ses_abc"],
     ["DELETE", "/session/ses_abc?directory=%2Fx"], ["get", "/agent"], ["GET", "/session/ses.with.dots_1/message"],
@@ -314,3 +315,27 @@ def test_the_allowlists_agree_with_js_on_every_case():
     """, {"cases": cases, "events": EVENT_PATHS})
     assert out["req"] == [allowed_request(m, p) for m, p in cases]
     assert out["ev"] == [allowed_event_path(p) for p in EVENT_PATHS]
+
+
+@requires_node
+def test_config_answers_are_projected_exactly_like_js_and_no_secret_survives():
+    """relay.project_response == codeRelay.js projectResponse on the fixtures that plant a credential everywhere."""
+    cases = run_node("""
+      import { LEAKY_PROVIDERS, LEAKY_CONFIG } from '@PUBLIC@/../test/leakyOpenCode.mjs'
+      import { projectResponse } from '@PUBLIC@/codeRelay.js'
+      const inputs = [
+        ['GET', '/config/providers?directory=%2Fhome%2Fu', 200, JSON.stringify(LEAKY_PROVIDERS)],
+        ['GET', '/config', 200, JSON.stringify(LEAKY_CONFIG)],
+        ['GET', '/config/providers', 500, 'boom SECRET'],
+        ['GET', '/config', 200, 'not json SECRET'],
+        ['GET', '/config', 200, '[1]'],
+        ['GET', '/agent', 200, '[{"name":"build"}]'],
+      ]
+      OUT(inputs.map(([m, p, st, b]) => ({ in: [m, p, st, b], out: projectResponse(m, p, st, b) })))
+    """)
+    for c in cases:
+        m, p, st, b = c["in"]
+        py_st, py_b = project_response(m, p, st, b)
+        assert (py_st, py_b) == (c["out"]["st"], c["out"]["b"]), p
+        if p.startswith("/config"):
+            assert "SECRET" not in py_b

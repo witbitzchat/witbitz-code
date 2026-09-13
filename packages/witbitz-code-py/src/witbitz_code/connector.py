@@ -29,7 +29,7 @@ import httpx
 
 from . import _js
 from .pairings import DEFAULT_OPENCODE_URL, hostname, read_env_password
-from .relay import RELAY_URL, Connect, RelayPeer, allowed_event_path, allowed_request
+from .relay import RELAY_URL, Connect, RelayPeer, allowed_event_path, allowed_request, project_response
 
 VERSION = "1"  # the hello protocol version, as the JS connector sends it
 REQUEST_TIMEOUT_MS = 30_000
@@ -298,6 +298,8 @@ class PairingServer:
                 timer.cancel()
             if self._inflight.get(rid) is ctrl:
                 del self._inflight[rid]
+        # /config and /config/providers carry API keys: rebuilt from an allowlist of fields before they leave (relay.py).
+        status, text = project_response(method, path, status, text)
         await reply(status, text)
 
     async def _forward(self, method: Any, path: str, body: Any) -> tuple[int, str]:
