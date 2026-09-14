@@ -15138,13 +15138,13 @@ function readLine(prompt, { hidden = false, input = process.stdin, output = proc
         if (ch === "\x7F" || ch === "\b") {
           if (s) {
             s = s.slice(0, -1);
-            if (!hidden) output.write("\b \b");
+            output.write("\b \b");
           }
           continue;
         }
         if (ch < " ") continue;
         s += ch;
-        if (!hidden) output.write(ch);
+        output.write(hidden ? "*" : ch);
       }
     };
     input.on("data", onData);
@@ -15153,7 +15153,7 @@ function readLine(prompt, { hidden = false, input = process.stdin, output = proc
 var yes = (answer) => !/^n/i.test(String(answer || "").trim());
 async function askKey({ io, label, check }) {
   for (let tries = 0; tries < 3; tries++) {
-    const key = await io.secret(`   Paste your ${label} API key (typing is hidden; Enter to skip): `);
+    const key = await io.secret(`   Paste your ${label} API key (it shows as *****; Enter to skip): `);
     if (!key) return "";
     if (!validKeyShape(key)) {
       io.say("   \u2716 That does not look like an API key (no spaces, 8\u2013512 characters). Try again.");
@@ -15560,7 +15560,7 @@ var saveTrustedRouterKey = (key) => {
   writeSecret(file, withAuthKey(existsSync8(file) ? readFileSync8(file, "utf8") : "", "trustedrouter", key));
 };
 async function setKey({ label, check, save, where, after }) {
-  const key = await readLine(`${label} API key (input hidden): `, { hidden: true });
+  const key = await readLine(`${label} API key (it shows as *****): `, { hidden: true });
   if (!key) {
     console.error("witbitz-code: no key entered \u2014 nothing changed");
     process.exit(1);

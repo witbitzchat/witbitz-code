@@ -92,7 +92,7 @@ const saveTrustedRouterKey = (key) => {
 
 /** `tinfoil-key` / `trustedrouter-key`: ask (hidden), check with the provider, save. A key the provider rejects is not saved. */
 async function setKey({ label, check, save, where, after }) {
-  const key = await readLine(`${label} API key (input hidden): `, { hidden: true })
+  const key = await readLine(`${label} API key (it shows as *****): `, { hidden: true })
   if (!key) { console.error('witbitz-code: no key entered — nothing changed'); process.exit(1) }
   if (!validKeyShape(key)) { console.error('witbitz-code: that does not look like an API key (no spaces, 8–512 characters) — nothing changed'); process.exit(1) }
   const v = await check(key)

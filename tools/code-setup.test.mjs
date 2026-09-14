@@ -262,14 +262,16 @@ function fakeTTY() {
   return { input, output }
 }
 
-test('a hidden key is never echoed; a paste that ends in a newline submits, and backspace edits', async () => {
+test('a key shows one * per character — never the key; a paste that ends in a newline submits, and backspace edits', async () => {
   const { input, output } = fakeTTY()
   const got = readLine('Key: ', { hidden: true, input, output })
   input.emit('data', 'tk_secret_value_1x')
   input.emit('data', '\u007f')
   input.emit('data', '2\r')
   assert.equal(await got, 'tk_secret_value_12')
-  assert.equal(output.text, 'Key: \n', 'only the prompt and the newline — not a character of the key')
+  // the owner: "show at least that something was pasted like with *****"
+  assert.equal(output.text, 'Key: ' + '*'.repeat(18) + '\b \b' + '*' + '\n', 'stars as it is pasted, one erased by backspace')
+  assert.ok(!/[a-z0-9_]/.test(output.text.slice('Key: '.length)), 'not a character of the key')
   assert.deepEqual(input.raw, [true, false], 'raw mode is switched back off')
   assert.equal(input.listenerCount('data'), 0)
 })

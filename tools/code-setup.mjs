@@ -254,7 +254,8 @@ export function serviceManager({ platform = process.platform, home = homedir(), 
 
 // ── the terminal ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Read one line from a terminal in raw mode — characters echoed, or hidden for a key. A pasted chunk is taken character
+/** Read one line from a terminal in raw mode — characters echoed, or one "*" each for a key (the owner: "can pasting the
+ *  keys show at least that something was pasted like with *****" — a silent prompt looked like the paste had failed). A pasted chunk is taken character
  *  by character, so a paste that ends in a newline submits instead of saving the newline into the key. */
 export function readLine(prompt, { hidden = false, input = process.stdin, output = process.stderr } = {}) {
   return new Promise((done) => {
@@ -273,10 +274,10 @@ export function readLine(prompt, { hidden = false, input = process.stdin, output
       for (const ch of chunk) {
         if (ch === '\u0003') { input.setRawMode(false); output.write('\n'); process.exit(130) }
         if (ch === '\r' || ch === '\n' || ch === '\u0004') return finish()
-        if (ch === '\u007f' || ch === '\b') { if (s) { s = s.slice(0, -1); if (!hidden) output.write('\b \b') } continue }
+        if (ch === '\u007f' || ch === '\b') { if (s) { s = s.slice(0, -1); output.write('\b \b') } continue }
         if (ch < ' ') continue
         s += ch
-        if (!hidden) output.write(ch)
+        output.write(hidden ? '*' : ch)
       }
     }
     input.on('data', onData)
@@ -290,7 +291,7 @@ const yes = (answer) => !/^n/i.test(String(answer || '').trim())
 /** Ask for a key until it is accepted, skipped (empty) or three tries were rejected. Returns the key to save, or ''. */
 async function askKey({ io, label, check }) {
   for (let tries = 0; tries < 3; tries++) {
-    const key = await io.secret(`   Paste your ${label} API key (typing is hidden; Enter to skip): `)
+    const key = await io.secret(`   Paste your ${label} API key (it shows as *****; Enter to skip): `)
     if (!key) return ''
     if (!validKeyShape(key)) { io.say('   ✖ That does not look like an API key (no spaces, 8–512 characters). Try again.'); continue }
     io.say('   Checking the key…')
