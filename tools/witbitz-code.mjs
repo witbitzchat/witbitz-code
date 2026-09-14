@@ -3,26 +3,34 @@
 // The single-file download is this entry bundled with everything it imports (tools/build-witbitz-code.sh →
 // spaces/public/downloads/witbitz-code.mjs, covered by the app's signed build certificate). Needs only Node ≥ 22.
 //
+//   node witbitz-code.mjs setup [--port 4096]      the whole setup, step by step (OpenCode, pairing, keys, background start)
 //   node witbitz-code.mjs pair [--name desk]       scan the QR with the Spaces app → this computer joins that account
 //   node witbitz-code.mjs serve [--port 4096]      start OpenCode (if it is not running) and the connector
 //   node witbitz-code.mjs status                   what this computer is paired with
 //   node witbitz-code.mjs rotate                   new secrets (no scan) — restart serve afterwards
 //   node witbitz-code.mjs unpair [--account a@b]   remove this computer from an account
 //   node witbitz-code.mjs tinfoil-key              store TINFOIL_API_KEY (read confidentially what a confidential model cannot see)
+//   node witbitz-code.mjs trustedrouter-key        store the TrustedRouter key in OpenCode's credentials (what `opencode auth login` does)
+//   node witbitz-code.mjs service install|uninstall|status [--port 4096]   start with the computer (systemd / launchd)
 import { spawn, spawnSync } from 'node:child_process'
 import { main as pairMain, envSet, writeSecret } from './opencode-pair.mjs'
 import { startConnector, loadPairings, parseEnvPassword, pairingsForPort } from './opencode-connector.mjs'
 import { startConfidentialProxy, proxyPortFor, proxyConfig, tinfoilKey } from './code-confidential.mjs'
 import { policyConfig, mergeConfig } from './code-opencode-policy.mjs'
-import { readFileSync, existsSync } from 'node:fs'
+import { runSetup, serviceManager, readLine, validKeyShape, checkTinfoilKey, checkTrustedRouterKey, authPath, withAuthKey } from './code-setup.mjs'
+import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const VERSION = '1.1.0'
+const VERSION = '1.2.0'
 const ENV_PATH = process.env.OPENCODE_ENV_FILE || join(homedir(), '.opencode-server.env')
 
 const HELP = `witbitz-code ${VERSION} — reach OpenCode on this computer from the Spaces Code section, end-to-end encrypted.
 
+  setup [--port <n>] [--name <name>]
+                               START HERE — installs OpenCode if needed, pairs, asks for your TrustedRouter and Tinfoil
+                               keys, and keeps it running in the background. Safe to run again; done steps are skipped.
   pair [--name <name>]         show a QR code; scan it in Spaces (Settings → Back up & recovery → Add a device)
   serve [--port <n>] [--no-opencode]
                                start OpenCode on 127.0.0.1 (unless it is already running) and the connector
@@ -31,6 +39,9 @@ const HELP = `witbitz-code ${VERSION} — reach OpenCode on this computer from t
   unpair [--account <email>]   remove this computer from an account
   tinfoil-key                  store your Tinfoil API key: images and files a CONFIDENTIAL model cannot read are read
                                inside Tinfoil's attested enclave with it (you pay Tinfoil; the key stays on this computer)
+  trustedrouter-key            store your TrustedRouter API key in OpenCode's credentials (same as opencode auth login)
+  service install|uninstall|status [--port <n>]
+                               start witbitz-code with the computer (systemd user service on Linux, launchd on macOS)
 
 Nothing listens on the network: OpenCode stays on 127.0.0.1 and the connector dials out to wss://code-relay.witbitz.chat.
 `
@@ -53,37 +64,34 @@ export function hasTrustedRouter(env = process.env) {
   } catch { return false }
 }
 
-/** Ask for a secret without echoing it (a TTY in raw mode), else read one line from stdin. */
-function readSecret(prompt) {
-  return new Promise((resolve) => {
-    const input = process.stdin
-    process.stderr.write(prompt)
-    if (!input.isTTY) { let s = ''; input.setEncoding('utf8'); input.on('data', (c) => { s += c }); input.on('end', () => resolve(s.split(/\r?\n/)[0].trim())); return }
-    let s = ''
-    input.setRawMode(true); input.resume(); input.setEncoding('utf8')
-    const onData = (ch) => {
-      if (ch === '\u0003') { input.setRawMode(false); process.stderr.write('\n'); process.exit(130) }
-      if (ch === '\r' || ch === '\n' || ch === '\u0004') { input.setRawMode(false); input.pause(); input.off('data', onData); process.stderr.write('\n'); return resolve(s.trim()) }
-      if (ch === '\u007f' || ch === '\b') { s = s.slice(0, -1); return }
-      s += ch
-    }
-    input.on('data', onData)
-  })
-}
-
-async function setTinfoilKey() {
-  const key = await readSecret('Tinfoil API key (from tinfoil.sh — input hidden): ')
-  if (!key) { console.error('witbitz-code: no key entered — nothing changed'); process.exit(1) }
+const saveTinfoilKey = (key) => {
   const text = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : ''
   writeSecret(ENV_PATH, envSet(text, 'TINFOIL_API_KEY', key))
-  console.error(`witbitz-code: saved TINFOIL_API_KEY in ${ENV_PATH} (only you can read it). It is used from the next message — no restart needed.`)
+}
+/** The key goes into OpenCode's own credentials file — never into OpenCode's environment, which every shell command the
+ *  agent runs inherits. */
+const saveTrustedRouterKey = (key) => {
+  const file = authPath()
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  writeSecret(file, withAuthKey(existsSync(file) ? readFileSync(file, 'utf8') : '', 'trustedrouter', key))
+}
+
+/** `tinfoil-key` / `trustedrouter-key`: ask (hidden), check with the provider, save. A key the provider rejects is not saved. */
+async function setKey({ label, check, save, where, after }) {
+  const key = await readLine(`${label} API key (input hidden): `, { hidden: true })
+  if (!key) { console.error('witbitz-code: no key entered — nothing changed'); process.exit(1) }
+  if (!validKeyShape(key)) { console.error('witbitz-code: that does not look like an API key (no spaces, 8–512 characters) — nothing changed'); process.exit(1) }
+  const v = await check(key)
+  if (v.ok === false) { console.error(`witbitz-code: ${v.why} — nothing changed`); process.exit(1) }
+  save(key)
+  console.error(`witbitz-code: saved in ${where} (only you can read it)${v.ok === null ? ` without checking it — ${v.why}` : ''}. ${after}`)
 }
 
 async function serve(args) {
   const port = Number(flag(args, '--port', '4096')) || 4096
   const all = loadPairings(undefined, () => {})
   if (!all.length) {
-    console.error('witbitz-code: this computer is not paired yet — run: witbitz-code pair')
+    console.error('witbitz-code: this computer is not paired yet — run: node witbitz-code.mjs setup')
     process.exit(1)
   }
   const mine = pairingsForPort(all, port)
@@ -93,9 +101,8 @@ async function serve(args) {
   }
   let child = null
   if (!(await isListening(port)) && !args.includes('--no-opencode')) {
-    const found = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['opencode'], { encoding: 'utf8' })
-    if (found.status !== 0) {
-      console.error('witbitz-code: OpenCode is not installed (or not on PATH). Install it, then run serve again:')
+    if (!findOpenCode()) {
+      console.error('witbitz-code: OpenCode is not installed (or not on PATH). Run node witbitz-code.mjs setup, or install it and run serve again:')
       console.error('  npm install -g opencode-ai        or        curl -fsSL https://opencode.ai/install | bash')
       process.exit(1)
     }
@@ -106,6 +113,9 @@ async function serve(args) {
     // through the confidential-model proxy (below) only where TrustedRouter is actually connected.
     const content = mergeConfig(policyConfig(), hasTrustedRouter() ? proxyConfig(proxyPortFor(port)) : {})
     const env = { ...process.env, ...(password ? { OPENCODE_SERVER_PASSWORD: password } : {}), OPENCODE_CONFIG_CONTENT: JSON.stringify(content) }
+    // The Tinfoil key is the proxy's (this process reads it). Handed to OpenCode it would be in every shell the agent runs,
+    // and OpenCode would list Tinfoil as a plain provider whose attestation nothing checks.
+    delete env.TINFOIL_API_KEY
     child = spawn('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], { stdio: 'inherit', env })
     child.on('exit', (code) => { console.error(`witbitz-code: OpenCode exited (${code}) — stopping`); process.exit(code || 0) })
     const stop = () => { try { child.kill() } catch { /* */ } }
@@ -124,6 +134,69 @@ async function serve(args) {
   process.on('SIGINT', bye); process.on('SIGTERM', bye)
 }
 
+const portArg = (args) => {
+  const port = Number(flag(args, '--port', '4096'))
+  if (!Number.isInteger(port) || port < 1 || port > 65535) { console.error('witbitz-code: --port needs a port number'); process.exit(2) }
+  return port
+}
+
+/** OpenCode on PATH, or where its own installer puts it (~/.opencode/bin — added to PATH here, so serve and the service find it). */
+function findOpenCode() {
+  const found = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['opencode'], { encoding: 'utf8' })
+  if (found.status === 0 && found.stdout.trim()) return found.stdout.trim().split(/\r?\n/)[0]
+  const own = join(homedir(), '.opencode', 'bin', 'opencode')
+  if (existsSync(own)) { process.env.PATH = `${dirname(own)}:${process.env.PATH || ''}`; return own }
+  return ''
+}
+
+async function setup(args) {
+  if (!process.stdin.isTTY) { console.error('witbitz-code: setup asks questions — run it in a terminal'); process.exit(2) }
+  const port = portArg(args)
+  const name = flag(args, '--name')
+  const say = (m) => console.error(m)
+  await runSetup({
+    io: { say, ask: (q) => readLine(q), secret: (q) => readLine(q, { hidden: true }) },
+    port,
+    findOpenCode,
+    installOpenCode: () => spawnSync('npm', ['install', '-g', 'opencode-ai'], { stdio: 'inherit' }).status === 0,
+    pairings: () => pairingsForPort(loadPairings(undefined, () => {}), port),
+    pair: () => pairMain([...(name ? ['--name', name] : []), ...(port !== 4096 ? ['--port', String(port)] : [])]),
+    hasTrustedRouter: () => hasTrustedRouter(),
+    saveTrustedRouterKey,
+    checkTrustedRouter: (k) => checkTrustedRouterKey(k),
+    tinfoilKey: () => tinfoilKey(),
+    saveTinfoilKey,
+    checkTinfoil: (k) => checkTinfoilKey(k),
+    isListening: () => isListening(port),
+    service: serviceManager(),
+    // read at step 5 — after step 1 may have put OpenCode's own bin folder on PATH
+    get serviceArgs() { return { node: process.execPath, script: fileURLToPath(import.meta.url), path: process.env.PATH || '' } },
+    bundled: process.env.WITBITZ_CODE_BUNDLED === '1',
+    serveHere: () => serve(['--port', String(port)]),
+  })
+}
+
+async function service(args) {
+  const [action] = args
+  const port = portArg(args)
+  const svc = serviceManager()
+  if (action === 'status') { console.log(`${svc.kind === 'none' ? 'unsupported' : svc.status(port)}${svc.logsHint(port) ? ` · logs: ${svc.logsHint(port)}` : ''}`); return }
+  if (action === 'uninstall') {
+    const r = svc.uninstall(port)
+    console.error(r.noop ? 'witbitz-code: no background service was installed' : 'witbitz-code: ✓ stopped, and it no longer starts with the computer (pairing and keys are kept)')
+    return
+  }
+  if (action !== 'install') { console.error('witbitz-code: service install | uninstall | status [--port <n>]'); process.exit(2) }
+  if (process.env.WITBITZ_CODE_BUNDLED !== '1') { console.error('witbitz-code: run this from the downloaded witbitz-code.mjs (from the repository, use tools/opencode-serve.sh)'); process.exit(2) }
+  if (!svc.available()) { console.error(`witbitz-code: background start is not available — ${svc.unavailableWhy}`); process.exit(1) }
+  if (!pairingsForPort(loadPairings(undefined, () => {}), port).length) { console.error('witbitz-code: pair first — node witbitz-code.mjs setup'); process.exit(1) }
+  if (!findOpenCode()) { console.error('witbitz-code: OpenCode is not installed — node witbitz-code.mjs setup'); process.exit(1) }
+  if (svc.status(port) !== 'active' && (await isListening(port))) { console.error(`witbitz-code: something is already running on 127.0.0.1:${port} (an OpenCode you started?) — close it first`); process.exit(1) }
+  const r = svc.install({ node: process.execPath, script: fileURLToPath(import.meta.url), path: process.env.PATH || '', port })
+  if (!r.ok) { console.error(`witbitz-code: ✖ ${r.why}`); process.exit(1) }
+  console.error(`witbitz-code: ✓ running in the background and starting with the computer. Logs: ${svc.logsHint(port)}`)
+}
+
 const [cmd, ...rest] = process.env.WITBITZ_CODE_IMPORT === '1' ? ['__import__'] : process.argv.slice(2)
 switch (cmd) {
   case '__import__': break
@@ -132,7 +205,10 @@ switch (cmd) {
   case 'status': await pairMain(['--status']); break
   case 'rotate': await pairMain(['--rotate', ...rest]); break
   case 'unpair': await pairMain(['--unpair', ...rest]); break
-  case 'tinfoil-key': await setTinfoilKey(); break
+  case 'setup': await setup(rest); break
+  case 'service': await service(rest); break
+  case 'tinfoil-key': await setKey({ label: 'Tinfoil', check: checkTinfoilKey, save: saveTinfoilKey, where: ENV_PATH, after: 'It is used from the next message — no restart needed.' }); break
+  case 'trustedrouter-key': await setKey({ label: 'TrustedRouter', check: checkTrustedRouterKey, save: saveTrustedRouterKey, where: authPath(), after: 'Restart witbitz-code (or its background service) so OpenCode picks it up.' }); break
   case 'version': case '--version': case '-v': console.log(VERSION); break
   default: console.log(HELP); if (cmd && cmd !== 'help' && cmd !== '--help' && cmd !== '-h') process.exit(2)
 }

@@ -42,8 +42,19 @@ The full design — wire format, key derivation, replay protection, the relay's 
 
 ```bash
 curl -fsSLo witbitz-code.mjs https://app.witbitz.chat/downloads/witbitz-code.mjs
+node witbitz-code.mjs setup
+```
+
+`setup` walks five steps and skips what is already done: installs OpenCode if it is missing (asks first), pairs this
+computer (scan the QR in Spaces → Settings → Back up & recovery → Add a device), asks for your TrustedRouter key and an
+optional Tinfoil key (each checked with the provider before it is saved; the TrustedRouter key goes into OpenCode's own
+`auth.json`, never into OpenCode's environment), and offers to keep it running with the computer (a systemd user
+service on Linux, a launch agent on macOS). The same, one command at a time:
+
+```bash
 node witbitz-code.mjs pair --name "my laptop"   # scan the QR in Spaces → Settings → Back up & recovery → Add a device
 node witbitz-code.mjs serve                     # starts OpenCode on 127.0.0.1:4096 if needed, then the connector
+node witbitz-code.mjs service install           # optional: start with the computer
 ```
 
 **Python (≥ 3.10)** — a second, independent implementation of the same protocol:
@@ -55,7 +66,8 @@ witbitz-code serve
 ```
 
 Commands, in both: `pair`, `serve [--port N]`, `status`, `rotate`, `unpair [--account EMAIL]`, `version`. The Node build
-also has `tinfoil-key` and runs the confidential-model proxy; the Python package does not have the proxy yet.
+also has `setup`, `service install|uninstall|status`, `trustedrouter-key` and `tinfoil-key`, and runs the
+confidential-model proxy; the Python package has none of these yet.
 
 ## Verify the download is this source
 
@@ -85,6 +97,7 @@ production.
 | `spaces/public/codeTransport.js`, `opencodeWire.js` | the page's side: the relay transport and OpenCode's event mapping |
 | `spaces/public/codeComputers.js` | the account's sealed registry of paired computers |
 | `spaces/public/deviceLink.js`, `recovery.js`, `compress.js`, `qrRender.js` | device link and account sealing used by pairing |
+| `tools/code-setup.mjs` | `setup`: the walk-through, the TrustedRouter/Tinfoil key checks, and the systemd/launchd service |
 | `tools/code-auto.mjs`, `tools/code-auto-runner.mjs` | Auto mode: the rules (hard deny, fast allow, the reviewer prompt, verdict parsing) and the loop that answers OpenCode's permission asks |
 | `tools/code-auto.vectors.json` | the shared Auto cases both implementations are tested against |
 | `tools/code-opencode-policy.mjs` | the OpenCode config `serve` merges in: subagents' ask rules, and a refusal that does not end the turn |

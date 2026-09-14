@@ -1768,12 +1768,12 @@ function FpInvertBatch(Fp2, nums, passZero = false) {
 function FpLegendre(Fp2, n) {
   const p1mod2 = (Fp2.ORDER - _1n2) / _2n;
   const powered = Fp2.pow(n, p1mod2);
-  const yes = Fp2.eql(powered, Fp2.ONE);
+  const yes2 = Fp2.eql(powered, Fp2.ONE);
   const zero = Fp2.eql(powered, Fp2.ZERO);
   const no = Fp2.eql(powered, Fp2.neg(Fp2.ONE));
-  if (!yes && !zero && !no)
+  if (!yes2 && !zero && !no)
     throw new Error("invalid Legendre symbol result");
-  return yes ? 1 : zero ? 0 : -1;
+  return yes2 ? 1 : zero ? 0 : -1;
 }
 function nLength(n, nBitLength) {
   if (nBitLength !== void 0)
@@ -7784,7 +7784,7 @@ var init_dist2 = __esm({
 });
 
 // tools/witbitz-code.mjs
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync as spawnSync2 } from "node:child_process";
 
 // tools/opencode-pair.mjs
 import { readFileSync, writeFileSync as writeFileSync2, chmodSync as chmodSync2, existsSync, mkdtempSync, mkdirSync, rmSync, renameSync as renameSync2 } from "node:fs";
@@ -12894,7 +12894,7 @@ var fail2 = (code, detail) => {
 var cacheKey2 = (d) => `${d.host}|${d.repo}`;
 var spkiHex = (der) => createHash2("sha256").update(der).digest("hex");
 function attestGet(url, { signal, port = 443, lookup } = {}) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const u = new URL(url);
     const req = https.request({
       host: u.hostname,
@@ -12911,7 +12911,7 @@ function attestGet(url, { signal, port = 443, lookup } = {}) {
       const chunks = [];
       res.on("data", (d) => chunks.push(d));
       res.on("error", reject);
-      res.on("end", () => resolve4({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json: async () => JSON.parse(Buffer.concat(chunks).toString("utf8")) }));
+      res.on("end", () => resolve5({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json: async () => JSON.parse(Buffer.concat(chunks).toString("utf8")) }));
     });
     req.on("error", reject);
     req.end();
@@ -13010,7 +13010,7 @@ Content-Type: ${headerSafe(f.mime || "application/octet-stream")}\r
   return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
 }
 function pinnedRequest({ host, path, method = "POST", headers = {}, body, fingerprint, timeoutMs = DEFAULT_TIMEOUT_MS, port = 443, ca }) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const payload = Buffer.isBuffer(body) ? body : Buffer.from(body || "");
     const req = https2.request({
       host,
@@ -13026,7 +13026,7 @@ function pinnedRequest({ host, path, method = "POST", headers = {}, body, finger
     }, (res) => {
       const chunks = [];
       res.on("data", (d) => chunks.push(d));
-      res.on("end", () => resolve4({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      res.on("end", () => resolve5({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
       res.on("error", (e) => reject(fail3("tool_unreachable", String(e && e.message))));
     });
     req.setTimeout(timeoutMs, () => req.destroy(fail3("tool_timeout", `${host} did not answer within ${timeoutMs}ms`)));
@@ -13336,7 +13336,7 @@ function tinfoilKey(envFile = process.env.OPENCODE_ENV_FILE || join3(homedir3(),
 }
 var HOP = /* @__PURE__ */ new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive", "accept-encoding", "expect"]);
 var forwardHeaders = (h) => Object.fromEntries(Object.entries(h).filter(([k]) => !HOP.has(k.toLowerCase())));
-var readBody = (req) => new Promise((resolve4, reject) => {
+var readBody = (req) => new Promise((resolve5, reject) => {
   const chunks = [];
   let n = 0;
   req.on("data", (c) => {
@@ -13346,7 +13346,7 @@ var readBody = (req) => new Promise((resolve4, reject) => {
       req.destroy();
     } else chunks.push(c);
   });
-  req.on("end", () => resolve4(Buffer.concat(chunks)));
+  req.on("end", () => resolve5(Buffer.concat(chunks)));
   req.on("error", reject);
 });
 function startConfidentialProxy({
@@ -13465,11 +13465,11 @@ function startConfidentialProxy({
       fail6(e, wantsStream);
     }
   });
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     server.once("error", reject);
     server.listen(port, host, () => {
       server.off("error", reject);
-      resolve4({ port: server.address().port, close: () => new Promise((r) => {
+      resolve5({ port: server.address().port, close: () => new Promise((r) => {
         server.closeAllConnections?.();
         server.close(() => r());
       }) });
@@ -14809,14 +14809,406 @@ if (false) {
   });
 }
 
-// tools/witbitz-code.mjs
-import { readFileSync as readFileSync7, existsSync as existsSync7 } from "node:fs";
+// tools/code-setup.mjs
+import { spawnSync } from "node:child_process";
+import { readFileSync as readFileSync7, existsSync as existsSync7, mkdirSync as mkdirSync5, copyFileSync, writeFileSync as writeFileSync6, rmSync as rmSync3, chmodSync as chmodSync5 } from "node:fs";
 import { homedir as homedir8 } from "node:os";
-import { join as join7 } from "node:path";
-var VERSION2 = "1.1.0";
-var ENV_PATH2 = process.env.OPENCODE_ENV_FILE || join7(homedir8(), ".opencode-server.env");
+import { join as join7, dirname as dirname3, resolve as resolve4 } from "node:path";
+var KEY_PAGES = { trustedrouter: "https://trustedrouter.com/console/api-keys", tinfoil: "https://dash.tinfoil.sh?tab=api-keys" };
+var TR_KEY_URL = "https://api.trustedrouter.com/v1/key";
+var TINFOIL_API = "https://inference.tinfoil.sh/v1";
+var TINFOIL_FALLBACK_MODEL = "gpt-oss-120b";
+var validKeyShape = (key) => typeof key === "string" && /^[\x21-\x7e]{8,512}$/.test(key);
+async function checkTrustedRouterKey(key, { fetchImpl = fetch, timeoutMs = 1e4 } = {}) {
+  try {
+    const r = await fetchImpl(TR_KEY_URL, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(timeoutMs) });
+    if (r.status === 401 || r.status === 403) return { ok: false, why: "TrustedRouter rejected this key" };
+    if (r.ok) return { ok: true };
+    return { ok: null, why: `TrustedRouter answered HTTP ${r.status}` };
+  } catch (e) {
+    return { ok: null, why: `could not reach TrustedRouter (${e && (e.code || e.name) || e})` };
+  }
+}
+async function checkTinfoilKey(key, { fetchImpl = fetch, timeoutMs = 15e3 } = {}) {
+  try {
+    let model = TINFOIL_FALLBACK_MODEL;
+    try {
+      const list = await fetchImpl(`${TINFOIL_API}/models`, { signal: AbortSignal.timeout(timeoutMs) });
+      const data = list.ok ? (await list.json() || {}).data : null;
+      const live = Array.isArray(data) ? data.find((m) => m && typeof m.id === "string" && !m.deprecated) : null;
+      if (live) model = live.id;
+    } catch {
+    }
+    const r = await fetchImpl(`${TINFOIL_API}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ model, messages: [], max_tokens: 1 }),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (r.status === 401 || r.status === 403) return { ok: false, why: "Tinfoil rejected this key" };
+    if (r.ok || r.status === 400 || r.status === 422) return { ok: true };
+    return { ok: null, why: `Tinfoil answered HTTP ${r.status}` };
+  } catch (e) {
+    return { ok: null, why: `could not reach Tinfoil (${e && (e.code || e.name) || e})` };
+  }
+}
+var authPath = (env = process.env) => join7(env.XDG_DATA_HOME || join7(homedir8(), ".local", "share"), "opencode", "auth.json");
+function withAuthKey(text, provider, key) {
+  let doc = {};
+  if (text && String(text).trim()) {
+    doc = JSON.parse(text);
+    if (!doc || typeof doc !== "object" || Array.isArray(doc)) throw new Error("auth.json is not a JSON object");
+  }
+  return JSON.stringify({ ...doc, [provider]: { type: "api", key } }, null, 2) + "\n";
+}
+var validPort = (port) => Number.isInteger(port) && port > 0 && port < 65536;
+var serviceName = (port) => port === 4096 ? "witbitz-code" : `witbitz-code-${port}`;
+var launchdLabel = (port) => port === 4096 ? "chat.witbitz.code" : `chat.witbitz.code.${port}`;
+var stableScript = (home = homedir8()) => join7(home, ".witbitz", "code", "witbitz-code.mjs");
+var plain = (s) => {
+  const v = String(s);
+  if (/[\x00-\x1f\x7f]/.test(v)) throw new Error("a path contains a control character");
+  return v;
+};
+var sdWord = (s) => `"${plain(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%").replace(/\$/g, "$$$$")}"`;
+function systemdUnit({ node, script, port, path }) {
+  if (!validPort(port)) throw new Error(`bad port ${port}`);
+  return [
+    "[Unit]",
+    "Description=witbitz-code \u2014 the Spaces Code section's connection to OpenCode on this computer",
+    "After=network-online.target",
+    "",
+    "[Service]",
+    `ExecStart=${sdWord(node)} ${sdWord(script)} serve --port ${port}`,
+    `Environment=${sdWord(`PATH=${path}`)}`,
+    "WorkingDirectory=%h",
+    "Restart=always",
+    "RestartSec=10",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    ""
+  ].join("\n");
+}
+var xml = (s) => plain(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+function launchdPlist({ node, script, port, path, home }) {
+  if (!validPort(port)) throw new Error(`bad port ${port}`);
+  const log = join7(home, "Library", "Logs", `${serviceName(port)}.log`);
+  const args = [node, script, "serve", "--port", String(port)].map((a) => `<string>${xml(a)}</string>`).join("");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${xml(launchdLabel(port))}</string>
+  <key>ProgramArguments</key><array>${args}</array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string></dict>
+  <key>WorkingDirectory</key><string>${xml(home)}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>${xml(log)}</string>
+  <key>StandardErrorPath</key><string>${xml(log)}</string>
+</dict>
+</plist>
+`;
+}
+var runCmd = (cmd2, args) => {
+  const r = spawnSync(cmd2, args, { encoding: "utf8" });
+  return { status: r.error ? -1 : r.status, stdout: r.stdout || "", stderr: r.stderr || "" };
+};
+function serviceManager({ platform = process.platform, home = homedir8(), env = process.env, run = runCmd, uid = process.getuid ? process.getuid() : 0 } = {}) {
+  const put = (file, text) => {
+    mkdirSync5(dirname3(file), { recursive: true });
+    writeFileSync6(file, text, { mode: 420 });
+  };
+  const stage = (script) => {
+    const dest = stableScript(home);
+    if (resolve4(script) !== resolve4(dest)) {
+      mkdirSync5(dirname3(dest), { recursive: true, mode: 448 });
+      copyFileSync(script, dest);
+      chmodSync5(dest, 420);
+    }
+    return dest;
+  };
+  const outdated = (script) => {
+    const dest = stableScript(home);
+    try {
+      return resolve4(script) !== resolve4(dest) && !readFileSync7(script).equals(readFileSync7(dest));
+    } catch {
+      return true;
+    }
+  };
+  if (platform === "linux") {
+    const dir = join7(env.XDG_CONFIG_HOME || join7(home, ".config"), "systemd", "user");
+    const unitFile = (port) => join7(dir, `${serviceName(port)}.service`);
+    const sc = (...a) => run("systemctl", ["--user", ...a]);
+    return {
+      kind: "systemd",
+      outdated,
+      available: () => sc("show-environment").status === 0,
+      unavailableWhy: "there is no systemd user session here (on WSL, turn systemd on in /etc/wsl.conf: [boot] systemd=true)",
+      status: (port) => existsSync7(unitFile(port)) ? sc("is-active", serviceName(port)).stdout.trim() || "inactive" : "not installed",
+      install({ node, script, port, path }) {
+        let unit;
+        try {
+          unit = systemdUnit({ node, script: stableScript(home), port, path });
+        } catch (e) {
+          return { ok: false, why: e.message };
+        }
+        stage(script);
+        put(unitFile(port), unit);
+        const steps = [sc("daemon-reload"), sc("enable", serviceName(port)), sc("restart", serviceName(port))];
+        const bad = steps.find((s) => s.status !== 0);
+        return bad ? { ok: false, why: (bad.stderr || bad.stdout).trim() || "systemctl failed" } : { ok: true };
+      },
+      restart: (port) => sc("restart", serviceName(port)).status === 0,
+      uninstall(port) {
+        if (!existsSync7(unitFile(port))) return { ok: true, noop: true };
+        sc("disable", "--now", serviceName(port));
+        rmSync3(unitFile(port), { force: true });
+        sc("daemon-reload");
+        return { ok: true };
+      },
+      logsHint: (port) => `journalctl --user -u ${serviceName(port)} -f`,
+      extraHint: "It starts when you log in. To keep it running while you are logged out: loginctl enable-linger $USER"
+    };
+  }
+  if (platform === "darwin") {
+    const plist = (port) => join7(home, "Library", "LaunchAgents", `${launchdLabel(port)}.plist`);
+    const target = (port) => `gui/${uid}/${launchdLabel(port)}`;
+    return {
+      kind: "launchd",
+      outdated,
+      available: () => true,
+      unavailableWhy: "",
+      status: (port) => {
+        if (!existsSync7(plist(port))) return "not installed";
+        const r = run("launchctl", ["print", target(port)]);
+        return r.status === 0 && /state = running/.test(r.stdout) ? "active" : "inactive";
+      },
+      install({ node, script, port, path }) {
+        let text;
+        try {
+          text = launchdPlist({ node, script: stableScript(home), port, path, home });
+        } catch (e) {
+          return { ok: false, why: e.message };
+        }
+        stage(script);
+        put(plist(port), text);
+        run("launchctl", ["bootout", target(port)]);
+        const r = run("launchctl", ["bootstrap", `gui/${uid}`, plist(port)]);
+        return r.status === 0 ? { ok: true } : { ok: false, why: (r.stderr || r.stdout).trim() || "launchctl bootstrap failed" };
+      },
+      restart: (port) => run("launchctl", ["kickstart", "-k", target(port)]).status === 0,
+      uninstall(port) {
+        if (!existsSync7(plist(port))) return { ok: true, noop: true };
+        run("launchctl", ["bootout", target(port)]);
+        rmSync3(plist(port), { force: true });
+        return { ok: true };
+      },
+      logsHint: (port) => `tail -f ~/Library/Logs/${serviceName(port)}.log`,
+      extraHint: "It starts when you log in."
+    };
+  }
+  return {
+    kind: "none",
+    outdated: () => false,
+    available: () => false,
+    unavailableWhy: `background start is not supported on ${platform} (use WSL on Windows)`,
+    status: () => "not installed",
+    install: () => ({ ok: false, why: "unsupported platform" }),
+    restart: () => false,
+    uninstall: () => ({ ok: true, noop: true }),
+    logsHint: () => "",
+    extraHint: ""
+  };
+}
+function readLine(prompt, { hidden = false, input = process.stdin, output = process.stderr } = {}) {
+  return new Promise((done) => {
+    output.write(prompt);
+    if (!input.isTTY) {
+      let s2 = "";
+      input.setEncoding("utf8");
+      input.on("data", (c) => {
+        s2 += c;
+      });
+      input.on("end", () => done(s2.split(/\r?\n/)[0].trim()));
+      return;
+    }
+    let s = "";
+    input.setRawMode(true);
+    input.resume();
+    input.setEncoding("utf8");
+    const finish = () => {
+      input.setRawMode(false);
+      input.pause();
+      input.off("data", onData);
+      output.write("\n");
+      done(s.trim());
+    };
+    const onData = (chunk) => {
+      for (const ch of chunk) {
+        if (ch === "") {
+          input.setRawMode(false);
+          output.write("\n");
+          process.exit(130);
+        }
+        if (ch === "\r" || ch === "\n" || ch === "") return finish();
+        if (ch === "\x7F" || ch === "\b") {
+          if (s) {
+            s = s.slice(0, -1);
+            if (!hidden) output.write("\b \b");
+          }
+          continue;
+        }
+        if (ch < " ") continue;
+        s += ch;
+        if (!hidden) output.write(ch);
+      }
+    };
+    input.on("data", onData);
+  });
+}
+var yes = (answer) => !/^n/i.test(String(answer || "").trim());
+async function askKey({ io, label, check }) {
+  for (let tries = 0; tries < 3; tries++) {
+    const key = await io.secret(`   Paste your ${label} API key (typing is hidden; Enter to skip): `);
+    if (!key) return "";
+    if (!validKeyShape(key)) {
+      io.say("   \u2716 That does not look like an API key (no spaces, 8\u2013512 characters). Try again.");
+      continue;
+    }
+    io.say("   Checking the key\u2026");
+    const v = await check(key);
+    if (v.ok === false) {
+      io.say(`   \u2716 ${v.why}. Copy it again from the key page and paste it here.`);
+      continue;
+    }
+    if (v.ok === null) io.say(`   \u26A0 Saved without checking \u2014 ${v.why}.`);
+    return key;
+  }
+  io.say(`   Skipped after three tries.`);
+  return "";
+}
+async function runSetup(d) {
+  const { io, port } = d;
+  const result = { opencode: false, paired: false, trustedrouter: false, tinfoil: false, running: "" };
+  io.say(`witbitz-code setup \u2014 five steps; anything already done is skipped.
+`);
+  io.say("1. OpenCode, the coding agent");
+  let oc = d.findOpenCode();
+  if (!oc) {
+    io.say("   OpenCode is not installed.");
+    if (yes(await io.ask('   Install it now with "npm install -g opencode-ai"? [Y/n] '))) {
+      if (d.installOpenCode()) oc = d.findOpenCode();
+    }
+    if (!oc) {
+      io.say("   \u2716 OpenCode is still not installed. Install it one of these ways, then run setup again:");
+      io.say("       npm install -g opencode-ai");
+      io.say("       curl -fsSL https://opencode.ai/install | bash      (then open a new terminal)");
+      return { ...result, stopped: "opencode" };
+    }
+  }
+  io.say(`   \u2713 OpenCode is installed`);
+  result.opencode = true;
+  io.say("\n2. This computer and your Witbitz account");
+  let mine = d.pairings();
+  if (!mine.length) {
+    io.say("   On your phone, open Spaces \u2192 Settings \u2192 Back up & recovery \u2192 Add a device, and scan the code below.\n");
+    await d.pair();
+    mine = d.pairings();
+    if (!mine.length) {
+      io.say("   \u2716 Pairing did not finish. Run setup again to retry.");
+      return { ...result, stopped: "pair" };
+    }
+  }
+  io.say(`   \u2713 Paired: ${mine.map((p) => `"${p.name}" \u2192 ${p.account || "your account"}`).join(", ")}`);
+  result.paired = true;
+  io.say("\n3. TrustedRouter \u2014 the AI models, including the confidential ones (you pay TrustedRouter directly)");
+  let trAdded = false;
+  if (d.hasTrustedRouter()) io.say("   \u2713 TrustedRouter is connected");
+  else {
+    io.say(`   Create a key at ${KEY_PAGES.trustedrouter} (sign in with Google or GitHub, add credit).`);
+    const key = await askKey({ io, label: "TrustedRouter", check: d.checkTrustedRouter });
+    if (key) {
+      try {
+        d.saveTrustedRouterKey(key);
+        trAdded = true;
+        io.say("   \u2713 Saved in OpenCode's credentials (only you can read it)");
+      } catch (e) {
+        io.say(`   \u2716 Could not save it (${e.message}). Run "opencode auth login" and choose TrustedRouter instead.`);
+      }
+    } else io.say("   Skipped \u2014 Code uses whatever providers OpenCode already has. Confidential models need TrustedRouter.");
+  }
+  result.trustedrouter = d.hasTrustedRouter();
+  io.say("\n4. Tinfoil \u2014 optional: lets confidential models read images, and makes readable copies of PDF, Word and Excel files");
+  if (d.tinfoilKey()) io.say("   \u2713 Tinfoil key saved");
+  else {
+    io.say(`   Create a key at ${KEY_PAGES.tinfoil} (you pay Tinfoil directly).`);
+    const key = await askKey({ io, label: "Tinfoil", check: d.checkTinfoil });
+    if (key) {
+      d.saveTinfoilKey(key);
+      io.say("   \u2713 Saved (only you can read it)");
+    } else io.say("   Skipped \u2014 add it later with: node witbitz-code.mjs tinfoil-key");
+  }
+  result.tinfoil = !!d.tinfoilKey();
+  io.say("\n5. Keep it running");
+  const svc = d.service;
+  const installed = svc.status(port);
+  if (installed === "active") {
+    if (d.bundled && svc.outdated(d.serviceArgs.script)) {
+      const r = svc.install({ ...d.serviceArgs, port });
+      io.say(r.ok ? "   \u2713 Updated the background service to this version and restarted it" : `   \u2716 Could not update the background service (${r.why})`);
+    } else if (trAdded) {
+      svc.restart(port);
+      io.say("   \u2713 Restarted the background service so OpenCode picks up TrustedRouter");
+    } else io.say("   \u2713 Already running in the background");
+    result.running = "service";
+  } else {
+    while (await d.isListening()) {
+      io.say(`   Something is already running on 127.0.0.1:${port} \u2014 most likely an OpenCode you started yourself.`);
+      io.say("   Close it (and any opencode window attached to it). Started that way, its TrustedRouter calls are not protected.");
+      const a = await io.ask("   Press Enter when it is closed, or type s to stop here: ");
+      if (/^s/i.test(a)) {
+        io.say(`   Stopped. When it is closed, run: node witbitz-code.mjs setup`);
+        return { ...result, stopped: "busy" };
+      }
+    }
+    if (svc.available() && d.bundled) {
+      if (yes(await io.ask("   Start witbitz-code now and every time you log in? [Y/n] "))) {
+        const r = svc.install({ ...d.serviceArgs, port });
+        if (r.ok) {
+          io.say(`   \u2713 Running in the background. Logs: ${svc.logsHint(port)}`);
+          if (svc.extraHint) io.say(`     ${svc.extraHint}`);
+          io.say("     Stop it with: node witbitz-code.mjs service uninstall");
+          result.running = "service";
+        } else io.say(`   \u2716 Could not start it in the background (${r.why}).`);
+      }
+    } else if (!d.bundled) io.say("   (Background start is for the downloaded witbitz-code.mjs; from the repository use tools/opencode-serve.sh.)");
+    else io.say(`   Background start is not available: ${svc.unavailableWhy}.`);
+  }
+  if (result.running === "service") {
+    io.say("\nDone. Open Spaces \u2192 \u2630 \u2192 Code on your phone.");
+    return result;
+  }
+  io.say("\nDone. Starting witbitz-code in this window \u2014 keep it open (Ctrl-C stops it). Open Spaces \u2192 \u2630 \u2192 Code on your phone.\n");
+  result.running = "here";
+  await d.serveHere();
+  return result;
+}
+
+// tools/witbitz-code.mjs
+import { readFileSync as readFileSync8, existsSync as existsSync8, mkdirSync as mkdirSync6 } from "node:fs";
+import { homedir as homedir9 } from "node:os";
+import { join as join8, dirname as dirname4 } from "node:path";
+import { fileURLToPath } from "node:url";
+var VERSION2 = "1.2.0";
+var ENV_PATH2 = process.env.OPENCODE_ENV_FILE || join8(homedir9(), ".opencode-server.env");
 var HELP = `witbitz-code ${VERSION2} \u2014 reach OpenCode on this computer from the Spaces Code section, end-to-end encrypted.
 
+  setup [--port <n>] [--name <name>]
+                               START HERE \u2014 installs OpenCode if needed, pairs, asks for your TrustedRouter and Tinfoil
+                               keys, and keeps it running in the background. Safe to run again; done steps are skipped.
   pair [--name <name>]         show a QR code; scan it in Spaces (Settings \u2192 Back up & recovery \u2192 Add a device)
   serve [--port <n>] [--no-opencode]
                                start OpenCode on 127.0.0.1 (unless it is already running) and the connector
@@ -14825,6 +15217,9 @@ var HELP = `witbitz-code ${VERSION2} \u2014 reach OpenCode on this computer from
   unpair [--account <email>]   remove this computer from an account
   tinfoil-key                  store your Tinfoil API key: images and files a CONFIDENTIAL model cannot read are read
                                inside Tinfoil's attested enclave with it (you pay Tinfoil; the key stays on this computer)
+  trustedrouter-key            store your TrustedRouter API key in OpenCode's credentials (same as opencode auth login)
+  service install|uninstall|status [--port <n>]
+                               start witbitz-code with the computer (systemd user service on Linux, launchd on macOS)
 
 Nothing listens on the network: OpenCode stays on 127.0.0.1 and the connector dials out to wss://code-relay.witbitz.chat.
 `;
@@ -14843,67 +15238,45 @@ async function isListening(port) {
 function hasTrustedRouter(env = process.env) {
   if (env.TRUSTEDROUTER_API_KEY) return true;
   try {
-    const auth = JSON.parse(readFileSync7(join7(env.XDG_DATA_HOME || join7(homedir8(), ".local", "share"), "opencode", "auth.json"), "utf8"));
+    const auth = JSON.parse(readFileSync8(join8(env.XDG_DATA_HOME || join8(homedir9(), ".local", "share"), "opencode", "auth.json"), "utf8"));
     return !!(auth && auth.trustedrouter);
   } catch {
     return false;
   }
 }
-function readSecret(prompt) {
-  return new Promise((resolve4) => {
-    const input = process.stdin;
-    process.stderr.write(prompt);
-    if (!input.isTTY) {
-      let s2 = "";
-      input.setEncoding("utf8");
-      input.on("data", (c) => {
-        s2 += c;
-      });
-      input.on("end", () => resolve4(s2.split(/\r?\n/)[0].trim()));
-      return;
-    }
-    let s = "";
-    input.setRawMode(true);
-    input.resume();
-    input.setEncoding("utf8");
-    const onData = (ch) => {
-      if (ch === "") {
-        input.setRawMode(false);
-        process.stderr.write("\n");
-        process.exit(130);
-      }
-      if (ch === "\r" || ch === "\n" || ch === "") {
-        input.setRawMode(false);
-        input.pause();
-        input.off("data", onData);
-        process.stderr.write("\n");
-        return resolve4(s.trim());
-      }
-      if (ch === "\x7F" || ch === "\b") {
-        s = s.slice(0, -1);
-        return;
-      }
-      s += ch;
-    };
-    input.on("data", onData);
-  });
-}
-async function setTinfoilKey() {
-  const key = await readSecret("Tinfoil API key (from tinfoil.sh \u2014 input hidden): ");
+var saveTinfoilKey = (key) => {
+  const text = existsSync8(ENV_PATH2) ? readFileSync8(ENV_PATH2, "utf8") : "";
+  writeSecret(ENV_PATH2, envSet(text, "TINFOIL_API_KEY", key));
+};
+var saveTrustedRouterKey = (key) => {
+  const file = authPath();
+  mkdirSync6(dirname4(file), { recursive: true, mode: 448 });
+  writeSecret(file, withAuthKey(existsSync8(file) ? readFileSync8(file, "utf8") : "", "trustedrouter", key));
+};
+async function setKey({ label, check, save, where, after }) {
+  const key = await readLine(`${label} API key (input hidden): `, { hidden: true });
   if (!key) {
     console.error("witbitz-code: no key entered \u2014 nothing changed");
     process.exit(1);
   }
-  const text = existsSync7(ENV_PATH2) ? readFileSync7(ENV_PATH2, "utf8") : "";
-  writeSecret(ENV_PATH2, envSet(text, "TINFOIL_API_KEY", key));
-  console.error(`witbitz-code: saved TINFOIL_API_KEY in ${ENV_PATH2} (only you can read it). It is used from the next message \u2014 no restart needed.`);
+  if (!validKeyShape(key)) {
+    console.error("witbitz-code: that does not look like an API key (no spaces, 8\u2013512 characters) \u2014 nothing changed");
+    process.exit(1);
+  }
+  const v = await check(key);
+  if (v.ok === false) {
+    console.error(`witbitz-code: ${v.why} \u2014 nothing changed`);
+    process.exit(1);
+  }
+  save(key);
+  console.error(`witbitz-code: saved in ${where} (only you can read it)${v.ok === null ? ` without checking it \u2014 ${v.why}` : ""}. ${after}`);
 }
 async function serve(args) {
   const port = Number(flag(args, "--port", "4096")) || 4096;
   const all = loadPairings(void 0, () => {
   });
   if (!all.length) {
-    console.error("witbitz-code: this computer is not paired yet \u2014 run: witbitz-code pair");
+    console.error("witbitz-code: this computer is not paired yet \u2014 run: node witbitz-code.mjs setup");
     process.exit(1);
   }
   const mine = pairingsForPort(all, port);
@@ -14913,16 +15286,16 @@ async function serve(args) {
   }
   let child = null;
   if (!await isListening(port) && !args.includes("--no-opencode")) {
-    const found = spawnSync(process.platform === "win32" ? "where" : "which", ["opencode"], { encoding: "utf8" });
-    if (found.status !== 0) {
-      console.error("witbitz-code: OpenCode is not installed (or not on PATH). Install it, then run serve again:");
+    if (!findOpenCode()) {
+      console.error("witbitz-code: OpenCode is not installed (or not on PATH). Run node witbitz-code.mjs setup, or install it and run serve again:");
       console.error("  npm install -g opencode-ai        or        curl -fsSL https://opencode.ai/install | bash");
       process.exit(1);
     }
-    const password = existsSync7(ENV_PATH2) ? parseEnvPassword(readFileSync7(ENV_PATH2, "utf8")) : "";
+    const password = existsSync8(ENV_PATH2) ? parseEnvPassword(readFileSync8(ENV_PATH2, "utf8")) : "";
     console.error(`witbitz-code: starting OpenCode on 127.0.0.1:${port}`);
     const content = mergeConfig(policyConfig(), hasTrustedRouter() ? proxyConfig(proxyPortFor(port)) : {});
     const env = { ...process.env, ...password ? { OPENCODE_SERVER_PASSWORD: password } : {}, OPENCODE_CONFIG_CONTENT: JSON.stringify(content) };
+    delete env.TINFOIL_API_KEY;
     child = spawn("opencode", ["serve", "--port", String(port), "--hostname", "127.0.0.1"], { stdio: "inherit", env });
     child.on("exit", (code) => {
       console.error(`witbitz-code: OpenCode exited (${code}) \u2014 stopping`);
@@ -14955,6 +15328,101 @@ async function serve(args) {
   process.on("SIGINT", bye);
   process.on("SIGTERM", bye);
 }
+var portArg = (args) => {
+  const port = Number(flag(args, "--port", "4096"));
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error("witbitz-code: --port needs a port number");
+    process.exit(2);
+  }
+  return port;
+};
+function findOpenCode() {
+  const found = spawnSync2(process.platform === "win32" ? "where" : "which", ["opencode"], { encoding: "utf8" });
+  if (found.status === 0 && found.stdout.trim()) return found.stdout.trim().split(/\r?\n/)[0];
+  const own = join8(homedir9(), ".opencode", "bin", "opencode");
+  if (existsSync8(own)) {
+    process.env.PATH = `${dirname4(own)}:${process.env.PATH || ""}`;
+    return own;
+  }
+  return "";
+}
+async function setup(args) {
+  if (!process.stdin.isTTY) {
+    console.error("witbitz-code: setup asks questions \u2014 run it in a terminal");
+    process.exit(2);
+  }
+  const port = portArg(args);
+  const name = flag(args, "--name");
+  const say = (m) => console.error(m);
+  await runSetup({
+    io: { say, ask: (q) => readLine(q), secret: (q) => readLine(q, { hidden: true }) },
+    port,
+    findOpenCode,
+    installOpenCode: () => spawnSync2("npm", ["install", "-g", "opencode-ai"], { stdio: "inherit" }).status === 0,
+    pairings: () => pairingsForPort(loadPairings(void 0, () => {
+    }), port),
+    pair: () => main([...name ? ["--name", name] : [], ...port !== 4096 ? ["--port", String(port)] : []]),
+    hasTrustedRouter: () => hasTrustedRouter(),
+    saveTrustedRouterKey,
+    checkTrustedRouter: (k) => checkTrustedRouterKey(k),
+    tinfoilKey: () => tinfoilKey(),
+    saveTinfoilKey,
+    checkTinfoil: (k) => checkTinfoilKey(k),
+    isListening: () => isListening(port),
+    service: serviceManager(),
+    // read at step 5 — after step 1 may have put OpenCode's own bin folder on PATH
+    get serviceArgs() {
+      return { node: process.execPath, script: fileURLToPath(import.meta.url), path: process.env.PATH || "" };
+    },
+    bundled: true,
+    serveHere: () => serve(["--port", String(port)])
+  });
+}
+async function service(args) {
+  const [action] = args;
+  const port = portArg(args);
+  const svc = serviceManager();
+  if (action === "status") {
+    console.log(`${svc.kind === "none" ? "unsupported" : svc.status(port)}${svc.logsHint(port) ? ` \xB7 logs: ${svc.logsHint(port)}` : ""}`);
+    return;
+  }
+  if (action === "uninstall") {
+    const r2 = svc.uninstall(port);
+    console.error(r2.noop ? "witbitz-code: no background service was installed" : "witbitz-code: \u2713 stopped, and it no longer starts with the computer (pairing and keys are kept)");
+    return;
+  }
+  if (action !== "install") {
+    console.error("witbitz-code: service install | uninstall | status [--port <n>]");
+    process.exit(2);
+  }
+  if (false) {
+    console.error("witbitz-code: run this from the downloaded witbitz-code.mjs (from the repository, use tools/opencode-serve.sh)");
+    process.exit(2);
+  }
+  if (!svc.available()) {
+    console.error(`witbitz-code: background start is not available \u2014 ${svc.unavailableWhy}`);
+    process.exit(1);
+  }
+  if (!pairingsForPort(loadPairings(void 0, () => {
+  }), port).length) {
+    console.error("witbitz-code: pair first \u2014 node witbitz-code.mjs setup");
+    process.exit(1);
+  }
+  if (!findOpenCode()) {
+    console.error("witbitz-code: OpenCode is not installed \u2014 node witbitz-code.mjs setup");
+    process.exit(1);
+  }
+  if (svc.status(port) !== "active" && await isListening(port)) {
+    console.error(`witbitz-code: something is already running on 127.0.0.1:${port} (an OpenCode you started?) \u2014 close it first`);
+    process.exit(1);
+  }
+  const r = svc.install({ node: process.execPath, script: fileURLToPath(import.meta.url), path: process.env.PATH || "", port });
+  if (!r.ok) {
+    console.error(`witbitz-code: \u2716 ${r.why}`);
+    process.exit(1);
+  }
+  console.error(`witbitz-code: \u2713 running in the background and starting with the computer. Logs: ${svc.logsHint(port)}`);
+}
 var [cmd, ...rest] = process.env.WITBITZ_CODE_IMPORT === "1" ? ["__import__"] : process.argv.slice(2);
 switch (cmd) {
   case "__import__":
@@ -14974,8 +15442,17 @@ switch (cmd) {
   case "unpair":
     await main(["--unpair", ...rest]);
     break;
+  case "setup":
+    await setup(rest);
+    break;
+  case "service":
+    await service(rest);
+    break;
   case "tinfoil-key":
-    await setTinfoilKey();
+    await setKey({ label: "Tinfoil", check: checkTinfoilKey, save: saveTinfoilKey, where: ENV_PATH2, after: "It is used from the next message \u2014 no restart needed." });
+    break;
+  case "trustedrouter-key":
+    await setKey({ label: "TrustedRouter", check: checkTrustedRouterKey, save: saveTrustedRouterKey, where: authPath(), after: "Restart witbitz-code (or its background service) so OpenCode picks it up." });
     break;
   case "version":
   case "--version":
