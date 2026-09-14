@@ -466,7 +466,8 @@ export function withoutAuthKey(text, provider) {
  *   io { say, ask } · yes (--yes: no confirmation) · removeKeys / removeNotes / removeSessions (--remove-… flags)
  *   service (serviceManager()) · allPairings() · unpair(pairing) → { ok, why } · codeDir · script (the downloaded file, or
  *   '' from the repository) · hasKeys() → names[] · deleteKeys() · removePath(path)
- *   notes() → { root, folders, pluginFiles[] } · sessions() → { dir, exists } · deleteSessions() · openCodeRunning() → ports[]
+ *   notes() → { root, folders, pluginFiles[] } · sessions() → { dir, exists } · deleteSessions()
+ *   openCodeProcesses() → [{ pid, cmd }] (processes with OpenCode's data folder open) · stopProcess(pid) → Promise<boolean>
  */
 export async function runUninstall(d) {
   const { io, service: svc } = d
@@ -496,14 +497,23 @@ export async function runUninstall(d) {
     const r = svc.uninstall(port)
     io.say(r.ok ? `✓ Background service${port !== 4096 ? ` for port ${port}` : ''} stopped and removed` : `✖ Could not remove the background service for port ${port} (${r.why})`)
   }
-  // Sessions: a running OpenCode holds its database open and would write it back — never delete under it. Asked here, after
-  // the services (which run OpenCode) are stopped and before anything else goes, so "close it" can still be acted on.
+  // Sessions: an OpenCode that has its database open would write it back — never delete under it. Asked here, after the
+  // services (which run OpenCode) are stopped and before anything else goes. What counts is a PROCESS WITH THE DATA FOLDER
+  // OPEN, not a port: the owner's test hit an OpenCode on 127.0.0.1:4096 that belonged to another WSL distro (distros share
+  // ports) — nothing the person could close, and nothing to do with their sessions. One that is theirs, it offers to stop.
   while (removeSessions) {
-    const running = await d.openCodeRunning()
-    if (!running.length) break
-    io.say(`OpenCode is still running (127.0.0.1:${running.join(', ')}). Close it — the terminal running it, or the OpenCode app — to delete the sessions.`)
+    const procs = await d.openCodeProcesses()
+    if (!procs.length) break
+    const named = procs.map((p) => `${(p.cmd || 'opencode').slice(0, 70)} (process ${p.pid})`).join('; ')
+    io.say(`OpenCode is still using the sessions: ${named}.`)
     if (d.yes) { io.say('✖ Keeping the OpenCode sessions.'); removeSessions = false; break }
-    if (/^k/i.test(await io.ask('Press Enter when it is closed, or type k to keep the sessions: '))) removeSessions = false
+    const a = await io.ask(`Stop ${procs.length > 1 ? 'them' : 'it'} now? [Y/n] — or type k to keep the sessions: `)
+    if (/^k/i.test(a)) { removeSessions = false; break }
+    if (/^n/i.test(a)) {
+      if (/^k/i.test(await io.ask('Close it yourself, then press Enter — or type k to keep the sessions: '))) removeSessions = false
+      continue
+    }
+    for (const p of procs) io.say((await d.stopProcess(p.pid)) ? `✓ Stopped process ${p.pid}` : `✖ Could not stop process ${p.pid}`)
   }
   for (const p of pairings) {
     let r

@@ -338,7 +338,7 @@ test('a pairing is moved by account room and computer, pointed at 127.0.0.1; por
 function fakeUninstall(over = {}) {
   const said = []
   const answers = [...(over.answers || [])]
-  const state = { ports: over.ports ?? [4096], pairings: over.pairings ?? [PAIRED_4096], removedServices: [], unpaired: [], keysDeleted: false, removed: [], sessionsDeleted: false }
+  const state = { ports: over.ports ?? [4096], pairings: over.pairings ?? [PAIRED_4096], removedServices: [], unpaired: [], keysDeleted: false, removed: [], sessionsDeleted: false, stopped: [] }
   const d = {
     io: { say: (m) => said.push(m), ask: async (q) => { said.push(q); return answers.shift() ?? '' } },
     yes: !!over.yes,
@@ -348,7 +348,8 @@ function fakeUninstall(over = {}) {
     notes: () => over.notes ?? { root: '/home/u/.local/share/witbitz-notes', folders: 0, pluginFiles: [] },
     sessions: () => over.sessions ?? { dir: '/home/u/.local/share/opencode', exists: false },
     deleteSessions: () => { state.sessionsDeleted = true },
-    openCodeRunning: async () => over.running ?? [],
+    openCodeProcesses: async () => over.procs ?? [],
+    stopProcess: async (pid) => { state.stopped.push(pid); return true },
     service: { installedPorts: () => state.ports, uninstall: (p) => { state.removedServices.push(p); return { ok: true } } },
     allPairings: () => state.pairings,
     unpair: async (p) => { if (over.offline) return { ok: false, why: 'network error' }; state.unpaired.push(p.account); return { ok: true } },
@@ -452,21 +453,34 @@ test('saying yes deletes the notes and the sessions — but never under a runnin
   assert.ok(f.state.removed.includes(NOTES.root))
   assert.equal(f.state.sessionsDeleted, true)
   assert.match(f.text(), /✓ Deleted the OpenCode sessions in \/home\/u\/\.local\/share\/opencode \(provider logins kept\)/)
-  // still running: it waits — and the services it stopped first no longer count; Enter re-checks, k keeps the sessions
+  // still in use: it names the process and offers to stop it — services first, and only a process with the data folder
+  // open counts (the owner's test waited on an OpenCode on 4096 from ANOTHER WSL distro, which nobody could close)
+  const SERVE = { pid: 4242, cmd: 'opencode serve --port 4096 --hostname 127.0.0.1' }
   let checks = 0
-  const waits = fakeUninstall({ keys: [], sessions: SESSIONS, answers: ['y', 'y', ''] })
-  waits.d.openCodeRunning = async () => (++checks === 1 ? [4097] : [])
-  waits.d.service.uninstall = (p) => { waits.state.removedServices.push(p); assert.equal(checks, 0, 'services stop before the check'); return { ok: true } }
-  await runUninstall(waits.d)
-  assert.match(waits.text(), /OpenCode is still running \(127\.0\.0\.1:4097\)\. Close it/)
-  assert.equal(waits.state.sessionsDeleted, true)
-  assert.ok(waits.state.removed.includes('/home/u/witbitz-code.mjs'))
-  const keep = fakeUninstall({ keys: [], sessions: SESSIONS, running: [4097], answers: ['y', 'y', 'k'] })
+  const stops = fakeUninstall({ keys: [], sessions: SESSIONS, answers: ['y', 'y', ''] })
+  stops.d.openCodeProcesses = async () => (++checks === 1 || !stops.state.stopped.length ? [SERVE] : [])
+  stops.d.service.uninstall = (p) => { stops.state.removedServices.push(p); assert.equal(checks, 0, 'services stop before the check'); return { ok: true } }
+  await runUninstall(stops.d)
+  assert.match(stops.text(), /OpenCode is still using the sessions: opencode serve --port 4096 --hostname 127\.0\.0\.1 \(process 4242\)/)
+  assert.match(stops.text(), /Stop it now\? \[Y\/n\] — or type k to keep the sessions/)
+  assert.deepEqual(stops.state.stopped, [4242])
+  assert.equal(stops.state.sessionsDeleted, true)
+  assert.ok(stops.state.removed.includes('/home/u/witbitz-code.mjs'))
+  const keep = fakeUninstall({ keys: [], sessions: SESSIONS, procs: [SERVE], answers: ['y', 'y', 'k'] })
   await runUninstall(keep.d)
   assert.equal(keep.state.sessionsDeleted, false)
-  const scripted = fakeUninstall({ yes: true, removeSessions: true, sessions: SESSIONS, running: [4096] })
+  assert.deepEqual(keep.state.stopped, [])
+  const self = fakeUninstall({ keys: [], sessions: SESSIONS, answers: ['y', 'y', 'n', ''] })
+  let n = 0
+  self.d.openCodeProcesses = async () => (++n === 1 ? [SERVE] : [])
+  await runUninstall(self.d)
+  assert.match(self.text(), /Close it yourself, then press Enter/)
+  assert.deepEqual(self.state.stopped, [], '"n": it does not stop anything itself')
+  assert.equal(self.state.sessionsDeleted, true)
+  const scripted = fakeUninstall({ yes: true, removeSessions: true, sessions: SESSIONS, procs: [SERVE] })
   await runUninstall(scripted.d)
-  assert.equal(scripted.state.sessionsDeleted, false, '--yes never waits: it keeps them and says so')
+  assert.equal(scripted.state.sessionsDeleted, false, '--yes never stops a process: it keeps them and says so')
+  assert.deepEqual(scripted.state.stopped, [])
   assert.match(scripted.text(), /✖ Keeping the OpenCode sessions/)
 })
 

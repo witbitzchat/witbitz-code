@@ -3,6 +3,7 @@
 # for a non technical user"):
 #
 #   curl -fsSL https://app.witbitz.chat/code.sh | bash
+#   curl -fsSL https://app.witbitz.chat/code.sh | bash -s uninstall      (the same download, then `uninstall`)
 #
 # It checks for Node.js 22+, downloads witbitz-code.mjs into your home folder, checks the file against the app's asset
 # manifest (the list of file hashes the app's signed build certificate covers — docs: witbitz.chat/docs/verify), and
@@ -18,6 +19,9 @@ say() { printf '%s\n' "$*" >&2; }
 # Everything runs from main(), called on the last line: if the download of this script is cut off mid-way, bash reads an
 # unfinished function and runs nothing.
 main() {
+  # which command to hand over to: setup (the default) or uninstall — anything else goes to setup as its arguments
+  local cmd=setup
+  case "${1:-}" in setup|uninstall) cmd="$1"; shift ;; esac
   if ! command -v node >/dev/null 2>&1; then
     say "witbitz-code needs Node.js 22 or newer, and this computer does not have Node.js."
     say "Install it from https://nodejs.org (the LTS download), open a new terminal window, and paste the same line again."
@@ -55,9 +59,9 @@ main() {
 
   # `curl … | bash` gives this script the download as its input, so setup's questions read the keyboard from /dev/tty.
   if { : </dev/tty; } 2>/dev/null; then
-    exec node "$DEST" setup ${1+"$@"} </dev/tty
+    exec node "$DEST" "$cmd" ${1+"$@"} </dev/tty
   fi
-  say "Now run:  node \"${DEST}\" setup"
+  say "Now run:  node \"${DEST}\" ${cmd}"
 }
 
 main ${1+"$@"}

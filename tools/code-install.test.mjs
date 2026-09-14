@@ -26,9 +26,9 @@ async function app({ manifestHash = sha(FILE), file = FILE } = {}) {
   return { url: `http://127.0.0.1:${srv.address().port}`, close: () => srv.close() }
 }
 
-function run(env) {
+function run(env, args = []) {
   return new Promise((resolve) => {
-    const child = spawn(BASH, [SCRIPT], { env: { ...process.env, ...env }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(BASH, [SCRIPT, ...args], { env: { ...process.env, ...env }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
     child.stdout.on('data', (c) => { out += c })
     child.stderr.on('data', (c) => { out += c })
@@ -83,4 +83,14 @@ test('without Node.js it says where to get it, before downloading anything', asy
   assert.match(r.out, /needs Node\.js 22 or newer, and this computer does not have Node\.js/)
   assert.match(r.out, /https:\/\/nodejs\.org/)
   assert.equal(existsSync(dest), false)
+})
+
+test('`bash -s uninstall` hands over to uninstall instead of setup; other words still go to setup', async (t) => {
+  const a = await app(); t.after(a.close)
+  const dest = join(mkdtempSync(join(tmpdir(), 'wbc-inst-')), 'witbitz-code.mjs')
+  const r = await run({ WITBITZ_APP: a.url, WITBITZ_CODE_FILE: dest }, ['uninstall'])
+  assert.equal(r.code, 0, r.out)
+  assert.match(r.out, /Now run:  node ".*witbitz-code\.mjs" uninstall$/m)
+  const other = await run({ WITBITZ_APP: a.url, WITBITZ_CODE_FILE: dest }, ['--port', '4097'])
+  assert.match(other.out, /Now run:  node ".*witbitz-code\.mjs" setup$/m)
 })

@@ -19,7 +19,7 @@ import { startConnector, loadPairings, parseEnvPassword, pairingsForPort, PAIRIN
 import { startConfidentialProxy, proxyPortFor, proxyConfig, tinfoilKey } from './code-confidential.mjs'
 import { policyConfig, mergeConfig } from './code-opencode-policy.mjs'
 import { runSetup, runUninstall, serviceManager, readLine, validKeyShape, checkTinfoilKey, checkTrustedRouterKey, authPath, withAuthKey, withoutAuthKey, withoutEnvKeys, pairingPort, withPairingPort } from './code-setup.mjs'
-import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync, readlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -185,6 +185,33 @@ async function setup(args) {
   })
 }
 
+/** This user's processes that have OpenCode's data folder open — the only ones deleting the sessions would pull files out
+ *  from under. Linux reads /proc (measured: finds `opencode serve` holding opencode.db in ~1 ms); macOS asks lsof. */
+function openCodeHolders(dir) {
+  const hits = []
+  if (existsSync('/proc/self/fd')) {
+    for (const p of readdirSync('/proc')) {
+      if (!/^\d+$/.test(p) || Number(p) === process.pid) continue
+      let fds
+      try { fds = readdirSync(`/proc/${p}/fd`) } catch { continue } // another user's process: not readable, and not ours
+      const holds = fds.some((f) => { try { const l = readlinkSync(`/proc/${p}/fd/${f}`); return l === dir || l.startsWith(dir + '/') } catch { return false } })
+      if (!holds) continue
+      let cmd = ''
+      try { cmd = readFileSync(`/proc/${p}/cmdline`, 'utf8').split('\0').filter(Boolean).join(' ') } catch { /* gone */ }
+      hits.push({ pid: Number(p), cmd })
+    }
+    return hits
+  }
+  const files = ['opencode.db', 'opencode.db-wal', 'opencode.db-shm'].map((f) => join(dir, f)).filter((f) => existsSync(f))
+  if (!files.length) return hits
+  const r = spawnSync('lsof', ['-t', '--', ...files], { encoding: 'utf8' })
+  for (const pid of new Set(String(r.stdout || '').split(/\s+/).filter(Boolean).map(Number))) {
+    if (!pid || pid === process.pid) continue
+    hits.push({ pid, cmd: String(spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout || '').trim() })
+  }
+  return hits
+}
+
 async function uninstall(args) {
   const yes = args.includes('--yes')
   if (!yes && !process.stdin.isTTY) { console.error('witbitz-code: uninstall asks before it removes anything — run it in a terminal, or pass --yes'); process.exit(2) }
@@ -222,11 +249,15 @@ async function uninstall(args) {
     // OpenCode's sessions: its whole data folder except auth.json (the provider logins)
     sessions: () => { const dir = dirname(authFile); return { dir, exists: existsSync(dir) && readdirSync(dir).some((f) => f !== 'auth.json') } },
     deleteSessions: () => { const dir = dirname(authFile); for (const f of readdirSync(dir)) if (f !== 'auth.json') rmSync(join(dir, f), { recursive: true, force: true }) },
-    openCodeRunning: async () => {
-      const ports = [...new Set([4096, ...serviceManager().installedPorts(), ...loadPairings(undefined, () => {}).map(pairingPort)])].filter(Boolean)
-      const up = []
-      for (const p of ports) if (await isListening(p)) up.push(p)
-      return up
+    openCodeProcesses: () => openCodeHolders(dirname(authFile)),
+    stopProcess: async (pid) => {
+      // gone = no such process, or a zombie (exited, not yet reaped by its parent — measured: kill(pid, 0) still succeeds)
+      const gone = () => { try { process.kill(pid, 0) } catch { return true } try { return /^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8')) } catch { return false } }
+      try { process.kill(pid, 'SIGTERM') } catch { return gone() }
+      for (let i = 0; i < 50; i++) { await new Promise((r) => setTimeout(r, 100)); if (gone()) return true }
+      try { process.kill(pid, 'SIGKILL') } catch { /* gone meanwhile */ }
+      await new Promise((r) => setTimeout(r, 300))
+      return gone()
     },
   })
   // a pairings file kept somewhere else (WITBITZ_CODE_PAIRINGS) goes too once every account let go of this computer

@@ -15340,15 +15340,25 @@ async function runUninstall(d) {
     io.say(r.ok ? `\u2713 Background service${port !== 4096 ? ` for port ${port}` : ""} stopped and removed` : `\u2716 Could not remove the background service for port ${port} (${r.why})`);
   }
   while (removeSessions) {
-    const running = await d.openCodeRunning();
-    if (!running.length) break;
-    io.say(`OpenCode is still running (127.0.0.1:${running.join(", ")}). Close it \u2014 the terminal running it, or the OpenCode app \u2014 to delete the sessions.`);
+    const procs = await d.openCodeProcesses();
+    if (!procs.length) break;
+    const named = procs.map((p) => `${(p.cmd || "opencode").slice(0, 70)} (process ${p.pid})`).join("; ");
+    io.say(`OpenCode is still using the sessions: ${named}.`);
     if (d.yes) {
       io.say("\u2716 Keeping the OpenCode sessions.");
       removeSessions = false;
       break;
     }
-    if (/^k/i.test(await io.ask("Press Enter when it is closed, or type k to keep the sessions: "))) removeSessions = false;
+    const a = await io.ask(`Stop ${procs.length > 1 ? "them" : "it"} now? [Y/n] \u2014 or type k to keep the sessions: `);
+    if (/^k/i.test(a)) {
+      removeSessions = false;
+      break;
+    }
+    if (/^n/i.test(a)) {
+      if (/^k/i.test(await io.ask("Close it yourself, then press Enter \u2014 or type k to keep the sessions: "))) removeSessions = false;
+      continue;
+    }
+    for (const p of procs) io.say(await d.stopProcess(p.pid) ? `\u2713 Stopped process ${p.pid}` : `\u2716 Could not stop process ${p.pid}`);
   }
   for (const p of pairings) {
     let r;
@@ -15391,7 +15401,7 @@ async function runUninstall(d) {
 }
 
 // tools/witbitz-code.mjs
-import { readFileSync as readFileSync8, existsSync as existsSync8, mkdirSync as mkdirSync6, rmSync as rmSync4, readdirSync as readdirSync3 } from "node:fs";
+import { readFileSync as readFileSync8, existsSync as existsSync8, mkdirSync as mkdirSync6, rmSync as rmSync4, readdirSync as readdirSync3, readlinkSync } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { join as join8, dirname as dirname4 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15579,6 +15589,44 @@ async function setup(args) {
     serveHere: (p) => serve(["--port", String(p)])
   });
 }
+function openCodeHolders(dir) {
+  const hits = [];
+  if (existsSync8("/proc/self/fd")) {
+    for (const p of readdirSync3("/proc")) {
+      if (!/^\d+$/.test(p) || Number(p) === process.pid) continue;
+      let fds;
+      try {
+        fds = readdirSync3(`/proc/${p}/fd`);
+      } catch {
+        continue;
+      }
+      const holds = fds.some((f) => {
+        try {
+          const l = readlinkSync(`/proc/${p}/fd/${f}`);
+          return l === dir || l.startsWith(dir + "/");
+        } catch {
+          return false;
+        }
+      });
+      if (!holds) continue;
+      let cmd2 = "";
+      try {
+        cmd2 = readFileSync8(`/proc/${p}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
+      } catch {
+      }
+      hits.push({ pid: Number(p), cmd: cmd2 });
+    }
+    return hits;
+  }
+  const files = ["opencode.db", "opencode.db-wal", "opencode.db-shm"].map((f) => join8(dir, f)).filter((f) => existsSync8(f));
+  if (!files.length) return hits;
+  const r = spawnSync2("lsof", ["-t", "--", ...files], { encoding: "utf8" });
+  for (const pid of new Set(String(r.stdout || "").split(/\s+/).filter(Boolean).map(Number))) {
+    if (!pid || pid === process.pid) continue;
+    hits.push({ pid, cmd: String(spawnSync2("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout || "").trim() });
+  }
+  return hits;
+}
 async function uninstall(args) {
   const yes2 = args.includes("--yes");
   if (!yes2 && !process.stdin.isTTY) {
@@ -15635,12 +15683,35 @@ async function uninstall(args) {
       const dir = dirname4(authFile);
       for (const f of readdirSync3(dir)) if (f !== "auth.json") rmSync4(join8(dir, f), { recursive: true, force: true });
     },
-    openCodeRunning: async () => {
-      const ports = [.../* @__PURE__ */ new Set([4096, ...serviceManager().installedPorts(), ...loadPairings(void 0, () => {
-      }).map(pairingPort)])].filter(Boolean);
-      const up = [];
-      for (const p of ports) if (await isListening(p)) up.push(p);
-      return up;
+    openCodeProcesses: () => openCodeHolders(dirname4(authFile)),
+    stopProcess: async (pid) => {
+      const gone = () => {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          return true;
+        }
+        try {
+          return /^\d+ \(.*\) Z/.test(readFileSync8(`/proc/${pid}/stat`, "utf8"));
+        } catch {
+          return false;
+        }
+      };
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        return gone();
+      }
+      for (let i = 0; i < 50; i++) {
+        await new Promise((r2) => setTimeout(r2, 100));
+        if (gone()) return true;
+      }
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+      }
+      await new Promise((r2) => setTimeout(r2, 300));
+      return gone();
     }
   });
   if (r.done && !r.left && PAIRINGS_PATH2 !== join8(codeDir, "pairings.json")) rmSync4(PAIRINGS_PATH2, { force: true });

@@ -44,6 +44,8 @@ The full design — wire format, key derivation, replay protection, the relay's 
 curl -fsSL https://app.witbitz.chat/code.sh | bash
 ```
 
+(`… | bash -s uninstall` fetches it and runs `uninstall` instead.)
+
 [`spaces/public/code.sh`](spaces/public/code.sh) checks for Node.js, downloads `witbitz-code.mjs` into your home folder,
 checks its sha256 against the app's `assets-manifest.json` (a mismatch is never used), and runs `setup`. Or by hand:
 
