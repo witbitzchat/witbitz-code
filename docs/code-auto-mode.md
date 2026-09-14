@@ -16,7 +16,10 @@ verdicts are sealed as signed turns (`tools/rc-verdict-ledger.mjs`). This design
 
 ## 1. What changes for the person
 
-- A session can be switched to **Auto** from the composer (per session, remembered on the computer).
+- A session is switched to **Auto** from the composer's mode chip — **Manual · Accept edits · Plan · Auto**, in Claude
+  Code's order, or Shift+Tab in the message box (per session, remembered on the computer). The other modes turn it off.
+  Accept edits is not this classifier: it is OpenCode's own permission rules on the session (`spaces/public/codeModes.js`) —
+  edits pass, protected files (.env, keys, .git/) and every other kind of ask still come to you.
 - In Auto, every permission ask OpenCode raises goes through the classifier first. It **allows** routine work, **denies**
   what must not run (telling the agent why, so it tries something safer), and **leaves the rest for you** — the approval
   card on the phone, exactly as today. Nothing is ever granted `always`.

@@ -32,7 +32,7 @@ const basename = (p) => String(p).split('/').pop() || 'attachment'
 // part a reader cannot get from the schema.
 const IGNORED = new Set([
   'server.connected', 'server.heartbeat', 'plugin.added', 'catalog.updated', 'reference.updated', 'integration.updated',
-  'integration.connection.updated', 'models-dev.refreshed', 'session.status', 'session.diff',
+  'integration.connection.updated', 'models-dev.refreshed', 'session.diff',
   'message.updated', 'message.removed', 'message.part.removed', 'file.edited', 'file.watcher.updated',
   'lsp.updated', 'project.updated', 'project.directories.updated', 'vcs.branch.updated', 'installation.updated',
   'installation.update-available', 'permission.v2.asked', 'permission.v2.replied', 'question.v2.asked', 'question.v2.replied',
@@ -93,7 +93,7 @@ export function normQuestionRequest(p) {
  *  indistinguishable from the answer without this — the live probe echoed the prompt into the step list before the
  *  map existed. Unknown messageID ⇒ KEEP: losing the assistant's answer is far worse than echoing a prompt, so the
  *  drop happens only on an explicit 'user'. */
-export function mapEvent(ev, sessionID = '', roles = null) {
+export function mapEvent(ev, sessionID = '', roles = null, partTypes = null) {
   if (!ev || typeof ev !== 'object') return []
   const type = String(ev.type || '')
   const p = ev.properties || {}
@@ -105,10 +105,19 @@ export function mapEvent(ev, sessionID = '', roles = null) {
     const info = p.info || {}
     if (info.id && info.role) roles.set(info.id, info.role)
   }
+  // Part types, for the same reason: a delta names only its part, and reasoning streams on field 'text' exactly like the
+  // answer does (measured, opencode 1.18.30: message.part.updated {type:'reasoning'} first, then ~80 text deltas).
+  if (type === 'message.part.updated' && partTypes && p.part && p.part.id && p.part.type) partTypes.set(p.part.id, p.part.type)
   if (IGNORED.has(type)) return []
 
   if (type === 'session.created') return sid ? [{ kind: 'session', id: sid }] : []
   if (type === 'session.idle') return [{ kind: 'idle' }]
+  // Whether the session is running a turn — whoever started it (another device, the TUI). Measured: {status:{type:'busy'}}
+  // when a turn starts, {type:'idle'} as it ends; 'retry' carries the provider's message while it waits to try again.
+  if (type === 'session.status') {
+    const st = p.status || {}
+    return st.type ? [{ kind: 'status', busy: st.type !== 'idle', retry: st.type === 'retry' ? String(st.message || '') : '' }] : []
+  }
   // An undo or redo made anywhere (the TUI, another device) — the session record carries its undo point, or none.
   if (type === 'session.updated') return sid ? [{ kind: 'revert', revert: normRevert(p.info && p.info.revert) }] : []
   if (type === 'session.compacted') return [{ kind: 'note', text: 'context compacted' }]
@@ -120,6 +129,7 @@ export function mapEvent(ev, sessionID = '', roles = null) {
   if (type === 'message.part.delta') {
     if (p.field !== 'text' || typeof p.delta !== 'string' || !p.delta) return []
     if (roles && p.messageID && roles.get(p.messageID) === 'user') return [] // our own prompt echoing back
+    if (partTypes && partTypes.get(p.partID) === 'reasoning') return [{ kind: 'thinking', id: p.partID, text: p.delta }] // not the answer
     return [{ kind: 'delta', id: p.partID, messageID: p.messageID, text: p.delta }]
   }
 
@@ -129,6 +139,7 @@ export function mapEvent(ev, sessionID = '', roles = null) {
       if (roles && part.messageID && roles.get(part.messageID) === 'user') return [] // our own prompt coming back
       return [{ kind: 'text', id: part.id, text: String(part.text), done: !!(part.time && part.time.end) }]
     }
+    if (part.type === 'reasoning') return [{ kind: 'reasoning', id: part.id, text: String(part.text || ''), done: !!(part.time && part.time.end) }]
     if (part.type === 'tool') {
       const st = part.state || {}
       return [{ kind: 'tool', id: part.id, name: part.tool || 'tool', status: st.status || 'pending', input: st.input || {} }]

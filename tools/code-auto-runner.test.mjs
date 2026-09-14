@@ -11,7 +11,7 @@ import { startAutoRunner } from './code-auto-runner.mjs'
 
 const DIR = '/home/u/repo'
 
-function fakeOpenCode({ reviewerText = '{"decision":"allow","severity":10,"rule":"allow:tests","reason":"the user asked for tests"}', reviewerDelayMs = 0, replyStatus = 200 } = {}) {
+function fakeOpenCode({ reviewerText = '{"decision":"allow","severity":10,"rule":"allow:tests","reason":"the user asked for tests"}', reviewerDelayMs = 0, replyStatus = 200, parents = {}, agents = [] } = {}) {
   const seen = []
   const pending = [] // PermissionRequest[]
   const sessions = new Map() // id → { title, permission }
@@ -31,7 +31,10 @@ function fakeOpenCode({ reviewerText = '{"decision":"allow","severity":10,"rule"
       if (i >= 0) pending.splice(i, 1)
       return json(true)
     }
+    if (q.method === 'GET' && url.pathname === '/agent') return json(agents)
+    if (q.method === 'GET' && (m = url.pathname.match(/^\/session\/(ses_[a-z]+)$/))) return json({ id: m[1], ...(parents[m[1]] ? { parentID: parents[m[1]] } : {}) })
     if (q.method === 'GET' && (m = url.pathname.match(/^\/session\/([^/]+)\/message$/))) {
+      if (parents[m[1]]) return json([{ info: { id: 'c1', role: 'user' }, parts: [{ type: 'text', text: 'THE PARENT MODEL WROTE THIS TASK PROMPT' }] }])
       return json([
         { info: { id: 'm1', role: 'user' }, parts: [{ type: 'text', text: 'please run the test suite' }] },
         { info: { id: 'm2', role: 'assistant', providerID: 'anthropic', modelID: 'claude-sonnet-4-6' }, parts: [{ type: 'text', text: 'on it' }] },
@@ -180,4 +183,77 @@ test('Auto is remembered on the computer: a restarted connector keeps deciding f
   again.setAuto('ses_main', DIR, false)
   assert.deepEqual(again.sessions(), [])
   assert.equal(verdicts.length >= 0, true)
+})
+
+// ── subagents (tools/code-opencode-policy.mjs) ──────────────────────────────────────────────────────────────────────
+// A subagent's asks carry its OWN session id. Auto was set on the parent, so those asks were left for a person whose page
+// never showed them — the turn would hang. They are decided under the parent's Auto, against what the person asked THERE.
+test('a subagent\'s ask is decided under its PARENT\'s Auto, reviewed against what the person asked in the parent', async (t) => {
+  const { oc, runner, verdicts } = await world(t, { parents: { ses_child: 'ses_main' } })
+  runner.setAuto('ses_main', DIR, true)
+  oc.ask({ sessionID: 'ses_child', permission: 'bash', patterns: ['npm test'], metadata: { command: 'npm test' } })
+  const r = await until(() => replies(oc)[0])
+  assert.equal(r && r.body.reply, 'once')
+  const msg = oc.seen.find((s) => s.method === 'POST' && /^\/session\/ses_rev\d+\/message$/.test(s.path))
+  assert.match(msg.body.parts[0].text, /please run the test suite/, 'what the PERSON asked, in the parent')
+  assert.doesNotMatch(msg.body.parts[0].text, /PARENT MODEL WROTE/, 'not the prompt a model wrote for the subagent')
+  assert.equal(verdicts[0].sessionID, 'ses_child', 'the verdict names the session the ask belongs to')
+})
+
+test('a session with no Auto ancestor is still left alone', async (t) => {
+  const { oc, runner } = await world(t, { parents: { ses_child: 'ses_other' } })
+  runner.setAuto('ses_main', DIR, true)
+  oc.ask({ sessionID: 'ses_child', permission: 'edit', patterns: ['src/a.ts'] })
+  await new Promise((r) => setTimeout(r, 250))
+  assert.equal(replies(oc).length, 0)
+})
+
+// OpenCode's Permission.reply: a `reject` also rejects EVERY other pending ask in that session. Answered as soon as it was
+// decided, a fast deny cancelled a sibling the reviewer was about to allow — how a Code session lost two of four agents.
+test('a refusal waits until nothing else is pending in the session, so it cannot cancel what Auto allows', async (t) => {
+  const { oc, runner, verdicts } = await world(t, { reviewerDelayMs: 300 })
+  runner.setAuto('ses_main', DIR, true)
+  oc.ask({ permission: 'bash', patterns: ['rm -rf ~'], metadata: { command: 'rm -rf ~' } }) // hard deny, decided at once
+  oc.ask({ permission: 'bash', patterns: ['npm test'], metadata: { command: 'npm test' } }) // reviewed, 300 ms
+  const both = await until(() => replies(oc).length >= 2 && replies(oc), 5000)
+  assert.ok(both, 'both are answered')
+  assert.deepEqual(both.map((r) => r.body.reply), ['once', 'reject'], 'the allow lands first, the refusal after it')
+  const denies = verdicts.filter((v) => v.action === 'deny')
+  assert.equal(denies[0].answered, null, 'the page hears the refusal at once, as held')
+  assert.equal(denies.at(-1).answered, true, 'and again once it has landed')
+})
+
+test('a refusal held behind a request left for the person is sent once that request is answered', async (t) => {
+  const { oc, runner } = await world(t, { reviewerText: '{"decision":"ask","severity":55,"rule":"ask:push","reason":"not requested"}' })
+  runner.setAuto('ses_main', DIR, true)
+  oc.ask({ permission: 'bash', patterns: ['rm -rf ~'], metadata: { command: 'rm -rf ~' } })
+  oc.ask({ permission: 'bash', patterns: ['git push'], metadata: { command: 'git push' } })
+  await new Promise((r) => setTimeout(r, 400))
+  assert.equal(replies(oc).length, 0, 'held while the person still has a card')
+  oc.pending.splice(oc.pending.findIndex((p) => p.patterns[0] === 'git push'), 1) // the person answered on the page
+  const r = await until(() => replies(oc)[0])
+  assert.equal(r && r.body.reply, 'reject')
+})
+
+const agentRules = (bash) => [{ permission: '*', pattern: '*', action: 'allow' }, { permission: 'bash', pattern: '*', action: bash }, { permission: 'edit', pattern: '*', action: 'deny' }, { permission: 'webfetch', pattern: '*', action: 'ask' }, { permission: 'websearch', pattern: '*', action: 'ask' }]
+
+test('starting a subagent whose own commands ask is allowed without a review', async (t) => {
+  const { oc, runner, verdicts } = await world(t, { agents: [{ name: 'explore', mode: 'subagent', permission: agentRules('ask') }] })
+  runner.setAuto('ses_main', DIR, true)
+  oc.ask({ permission: 'task', patterns: ['explore'], metadata: { description: 'Explore the repo', subagent_type: 'explore' } })
+  const r = await until(() => replies(oc)[0])
+  assert.equal(r && r.body.reply, 'once')
+  assert.equal(oc.seen.filter((s) => s.method === 'POST' && s.path === '/session').length, 0, 'no reviewer')
+  assert.equal(verdicts[0].rule, 'fast:subagent-asks')
+})
+
+test('starting a subagent whose commands would NOT ask is left for the person, with why', async (t) => {
+  const { oc, runner, verdicts } = await world(t, { agents: [{ name: 'yolo', mode: 'subagent', permission: agentRules('allow') }] })
+  runner.setAuto('ses_main', DIR, true)
+  oc.ask({ permission: 'task', patterns: ['yolo'], metadata: { description: 'Do it', subagent_type: 'yolo' } })
+  await until(() => verdicts.length)
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(replies(oc).length, 0)
+  assert.equal(verdicts[0].action, 'ask')
+  assert.match(verdicts[0].reason, /yolo.*without asking/)
 })

@@ -70,7 +70,7 @@ all the accounts are yours. If a second account belongs to **another person**, r
 - **The OpenCode password** lives in `~/.opencode-server.env` (created 0600 on first pair). The connector adds it to local
   calls, and it never leaves the computer.
 
-**Auto mode** (the shield button in the Code composer, per session) lets this computer answer OpenCode's permission
+**Auto mode** (Manual · Accept edits · Plan · **Auto** in the Code composer's mode chip, per session) lets this computer answer OpenCode's permission
 prompts while you are away:
 - **Refused at once:** what is never safe, like `rm -rf ~`, `mkfs` or `dd` onto a disk. The agent is told why.
 - **Allowed at once:** read-only commands that stay inside the project, and edits to ordinary files in it.

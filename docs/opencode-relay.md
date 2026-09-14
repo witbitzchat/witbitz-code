@@ -320,3 +320,25 @@ way). Considered and parked:
   certificate — the workable design is a WebRTC data channel signalled over the relay. Substantially more work.
 
 Revisit if the ~140 ms is felt in daily use (the same-machine path first) or if offline LAN use becomes a requirement.
+
+## 13. Confidential models — enforced on the computer (built 2026-09-13)
+
+Owner: "· confidential" in Code was only a label (OpenCode called TrustedRouter directly: no `min_privacy`, no receipt
+check), and a confidential model that cannot see images should get them through Tinfoil, **paid with the user's own
+Tinfoil key**. `tools/code-confidential.mjs` is a TrustedRouter proxy on `127.0.0.1:<OpenCode port + 100>`, started by the
+connector (`opencode-serve.sh`) and by `witbitz-code serve`; OpenCode's TrustedRouter `baseURL` points at it
+(`opencode-config.mjs --proxy-port` / `OPENCODE_CONFIG_CONTENT`, never writing the user's opencode.json).
+
+- **Not confidential in the catalog** (`agent/modelCatalog.mjs` tiers) → passed through byte for byte.
+- **Confidential** → the room's own checks, reused: gateway attestation (`gatewayAttest.mjs`) before sending; the body
+  floor `provider.min_privacy=confidential` + forced streaming + receipt nonce; the answer's text streams live but tool
+  calls / finish / usage / `[DONE]` are HELD until `inferenceReceipt.mjs` verifies the receipt for these exact bytes — a
+  failure ends the step with an SSE error, so OpenCode runs no tool. Measured live: DeepSeek V4 Flash and Kimi K3 verify.
+- **Images / documents for a text-only confidential model** → Tinfoil's attested enclaves (`tinfoilAttest.mjs` +
+  `attestedTool.mjs` pinning + `tinfoilVision.mjs` / `tinfoilDocRead.mjs`), with `TINFOIL_API_KEY` from the env or
+  `~/.opencode-server.env` (read per request; `witbitz-code tinfoil-key` stores it). Converted text is cached by content
+  (OpenCode re-sends the conversation every step). No key / no attestation / rejected key ⇒ the turn is refused with a plain
+  reason; the file is never sent elsewhere. Those models are declared `attachment: true` so OpenCode passes the image on.
+- Honest limits: text already streamed before a failing receipt stays visible (it is marked failed and never acted on); a
+  lapsed upstream verification window (~1% in rooms, where it is retried) surfaces as a retryable refusal here; the Python
+  connector has no proxy yet.

@@ -7,17 +7,32 @@
 // error — is LEFT for the person's approval card. Each decision: one line in the local log (a digest, never the command)
 // and an onVerdict callback (the connector sends it to open pages as `autoverdict`).
 //
+// Three rules that come from OpenCode's own code (tools/code-opencode-policy.mjs has the findings):
+//  · A SUBAGENT'S asks carry its own session id, and it is not the one switched to Auto — they are decided under the
+//    nearest ancestor in Auto, reviewed against what the person asked THERE (not the prompt a model wrote for the agent).
+//  · A `reject` makes OpenCode reject EVERY other pending ask in that session. So a refusal is HELD until nothing else is
+//    pending there: it can never cancel a sibling Auto is about to allow, or one waiting on the person's card.
+//  · Starting a subagent is allowed without a review only when that agent's OWN rules ask for bash/edit/webfetch/websearch
+//    (a subagent does not inherit the session's asks); one whose rules would let it run commands unasked is the person's.
+//
 //   const auto = startAutoRunner({ base, auth, statePath, logPath, onVerdict })
 //   auto.setAuto(sessionID, directory, on) · auto.sessions() · auto.stop()
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { classifyDeterministic, reviewerPrompt, parseVerdict, actionFor, logRecord } from './code-auto.mjs'
+import { SUBAGENT_GATED } from './code-opencode-policy.mjs'
 
 const REVIEW_TITLE = 'witbitz-auto-review' // the page never lists a session with this title
 const HANDLED_TTL_MS = 30 * 60_000
 const MAX_USER_MESSAGES = 6
 const MAX_DETAIL = 300
+const PARENT_TTL_MS = 10 * 60_000
+const AGENTS_TTL_MS = 60_000
+const MAX_DEPTH = 4 // parent links followed looking for the session in Auto
+const REFUSAL_SUFFIX = '(Witbitz Auto mode refused this — try a narrower or safer step.)'
+/** OpenCode's own evaluation for the catch-all pattern: the LAST rule that matches wins. */
+const actionOf = (rules, perm) => { let a = null; for (const r of rules || []) if (r && (r.permission === perm || r.permission === '*') && r.pattern === '*') a = r.action; return a }
 /** What the ask is about, for the person's own page (the verdict is sealed to it, like the ask) — never for the log. */
 const detailOf = (req) => String((req.metadata && typeof req.metadata.command === 'string' && req.metadata.command) || (Array.isArray(req.patterns) && typeof req.patterns[0] === 'string' ? req.patterns[0] : '')).slice(0, MAX_DETAIL)
 
@@ -25,6 +40,9 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
   const root = String(base || '').replace(/\/+$/, '')
   const auto = new Map() // sessionID → { dir, at }
   const handled = new Map() // permission id → when it was taken up (so a poll never reviews it twice)
+  const parents = new Map() // sessionID → { parent: string|null, at } — so a subagent's ask finds its Auto session
+  const agentsByDir = new Map() // directory → { list, at } — GET /agent, for what a subagent's own rules allow
+  const held = new Map() // sessionID → Map(permission id → a refusal waiting for its session's other asks to settle)
   let timer = 0
   let stopped = false
   let polling = false
@@ -81,8 +99,56 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
     return { model, userMessages: userMessages.slice(-MAX_USER_MESSAGES) }
   }
 
-  async function review(req, dir) {
-    const { model, userMessages } = await sessionContext(req.sessionID, dir)
+  /** The session's parent (null for a top-level session); undefined when OpenCode could not say — not cached. */
+  async function parentOf(sid, dir) {
+    const c = parents.get(sid)
+    if (c && now() - c.at < PARENT_TTL_MS) return c.parent
+    try {
+      const r = await call('GET', `/session/${encodeURIComponent(sid)}`, dir)
+      if (!r.ok || !r.json) return undefined
+      const parent = typeof r.json.parentID === 'string' && r.json.parentID ? r.json.parentID : null
+      parents.set(sid, { parent, at: now() })
+      return parent
+    } catch { return undefined }
+  }
+  /** The session in Auto this ask belongs to: its own, or its nearest ancestor's in the same project. */
+  async function ownerOf(sid, dir) {
+    let cur = sid
+    for (let i = 0; i < MAX_DEPTH && cur; i++) {
+      const on = auto.get(cur)
+      if (on && on.dir === dir) return cur
+      cur = await parentOf(cur, dir)
+    }
+    return null
+  }
+  /** Does the named agent ASK (or refuse) before every gated kind of action? null when its rules cannot be read. */
+  async function subagentAsks(name, dir) {
+    let c = agentsByDir.get(dir)
+    if (!c || now() - c.at > AGENTS_TTL_MS) {
+      try {
+        const r = await call('GET', '/agent', dir)
+        if (!r.ok || !Array.isArray(r.json)) return null
+        c = { list: r.json, at: now() }
+        agentsByDir.set(dir, c)
+      } catch { return null }
+    }
+    const agent = c.list.find((a) => a && a.name === name)
+    if (!agent || !Array.isArray(agent.permission)) return false
+    return SUBAGENT_GATED.every((p) => { const a = actionOf(agent.permission, p); return a === 'ask' || a === 'deny' })
+  }
+  /** Starting a subagent: allowed at once when its own rules ask, the person's when they would not. null = review it. */
+  async function classifySubagent(req, dir) {
+    if (req.permission !== 'task') return null
+    const name = String((req.metadata && req.metadata.subagent_type) || (Array.isArray(req.patterns) && req.patterns[0]) || '')
+    if (!name) return null
+    const asks = await subagentAsks(name, dir)
+    if (asks === true) return { stage: 'fast-allow', decision: 'allow', rule: 'fast:subagent-asks', reason: `starts the ${name} agent, whose own commands each ask for approval` }
+    if (asks === false) return { stage: 'fast-ask', decision: 'ask', rule: 'ask:subagent-unguarded', reason: `the ${name} agent's own commands would run without asking — start it yourself if you trust it` }
+    return null
+  }
+
+  async function review(req, dir, owner = req.sessionID) {
+    const { model, userMessages } = await sessionContext(owner, dir)
     if (!model) return { verdict: null, model: '', note: 'the session has no model to review with yet' }
     const prompt = reviewerPrompt({ req, directory: dir, userMessages })
     const created = await call('POST', '/session', dir, { title: REVIEW_TITLE, permission: [{ permission: '*', pattern: '*', action: 'deny' }] })
@@ -105,20 +171,53 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
     }
   }
 
-  async function decide(req, dir) {
+  const emit = (req, stage, action, rec, reason, answered) => {
+    try { onVerdict({ id: req.id, sessionID: req.sessionID, permission: req.permission, detail: detailOf(req), stage, action, severity: rec.severity, rule: rec.rule, reason, answered }) } catch { /* a listener never breaks the loop */ }
+  }
+
+  async function decide(req, dir, owner = req.sessionID) {
     const t0 = now()
-    const det = classifyDeterministic(req, { directory: dir, home })
+    const det = classifyDeterministic(req, { directory: dir, home }) || await classifySubagent(req, dir)
     let stage, verdict, model = '', note = ''
-    if (det) { stage = det.stage; verdict = { decision: det.decision, severity: det.stage === 'hard-deny' ? 100 : 0, rule: det.rule, reason: det.reason } }
-    else { stage = 'reviewer'; ({ verdict, model, note } = await review(req, dir)) }
+    if (det) { stage = det.stage; verdict = { decision: det.decision, severity: det.stage === 'hard-deny' ? 100 : det.stage === 'fast-ask' ? 50 : 0, rule: det.rule, reason: det.reason } }
+    else { stage = 'reviewer'; ({ verdict, model, note } = await review(req, dir, owner)) }
     const action = det ? det.decision : actionFor(verdict)
+    const rec = logRecord({ req, stage, verdict, action, model, ms: now() - t0, at: t0 })
+    const reason = (verdict && verdict.reason) || note || ''
+    if (action === 'deny') {
+      // HELD, not sent: see the header. The page hears it now (answered: null) and again when it lands.
+      if (!held.has(req.sessionID)) held.set(req.sessionID, new Map())
+      held.get(req.sessionID).set(req.id, { req, dir, stage, rec, reason, message: `${(verdict && verdict.reason) || 'Refused by Auto mode.'} ${REFUSAL_SUFFIX}` })
+      emit(req, stage, action, rec, reason, null)
+      return
+    }
     let answered = null
     if (action === 'allow') answered = await reply(req, dir, 'once')
-    else if (action === 'deny') answered = await reply(req, dir, 'reject', `${(verdict && verdict.reason) || 'Refused by Auto mode.'} (Witbitz Auto mode refused this — try a narrower or safer step.)`)
-    const rec = logRecord({ req, stage, verdict, action, model, ms: now() - t0, at: t0 })
     appendLog(answered === false ? { ...rec, answered: false } : rec)
-    const reason = (verdict && verdict.reason) || note || ''
-    try { onVerdict({ id: req.id, sessionID: req.sessionID, permission: req.permission, detail: detailOf(req), stage, action, severity: rec.severity, rule: rec.rule, reason, answered: answered === null ? null : answered }) } catch { /* a listener never breaks the loop */ }
+    emit(req, stage, action, rec, reason, answered)
+  }
+
+  /** Send the held refusals of every session whose OTHER asks have all settled. `pending`: this directory's asks, fresh. */
+  async function releaseHeld(dir, pending) {
+    for (const [sid, refusals] of held) {
+      const mine = [...refusals.values()].filter((h) => h.dir === dir)
+      if (!mine.length) continue
+      const pendingIds = new Set(pending.filter((p) => p && p.sessionID === sid).map((p) => p.id))
+      for (const h of mine) {
+        if (pendingIds.has(h.req.id)) continue
+        refusals.delete(h.req.id) // answered elsewhere (the person, or the turn was stopped) before it could be sent
+        appendLog({ ...h.rec, answered: false })
+        emit(h.req, h.stage, 'deny', h.rec, h.reason, false)
+      }
+      if ([...pendingIds].some((id) => !refusals.has(id))) continue // something else in the session is still open
+      for (const h of [...refusals.values()].filter((x) => x.dir === dir)) {
+        refusals.delete(h.req.id)
+        const answered = await reply(h.req, dir, 'reject', h.message)
+        appendLog(answered === false ? { ...h.rec, answered: false } : h.rec)
+        emit(h.req, h.stage, 'deny', h.rec, h.reason, answered)
+      }
+      if (!refusals.size) held.delete(sid)
+    }
   }
 
   // ── the loop ──
@@ -133,12 +232,13 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
         let list = []
         try { const r = await call('GET', '/permission', dir); list = Array.isArray(r.json) ? r.json : [] } catch { continue } // OpenCode restarting
         for (const req of list) {
-          if (!req || typeof req.id !== 'string' || handled.has(req.id)) continue
-          const on = auto.get(req.sessionID)
-          if (!on || on.dir !== dir) continue
+          if (!req || typeof req.id !== 'string' || typeof req.sessionID !== 'string' || handled.has(req.id)) continue
+          const owner = await ownerOf(req.sessionID, dir)
+          if (!owner) continue
           handled.set(req.id, now())
-          decide(req, dir).catch((e) => log(`code-auto: ${e && e.message}`))
+          decide(req, dir, owner).catch((e) => log(`code-auto: ${e && e.message}`))
         }
+        await releaseHeld(dir, list)
       }
     } finally { polling = false }
   }

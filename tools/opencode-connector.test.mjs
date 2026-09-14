@@ -28,6 +28,9 @@ async function fakeOpenCode() {
     if (path === '/config') return json(LEAKY_CONFIG)
     if (path === '/session/ses_big/message') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(big) }
     if (path === '/session/ses_1/message' && req.method === 'POST') return json({ echoed: JSON.parse(body) })
+    if (path === '/session/ses_nope' && req.method === 'GET') return json({ name: 'NotFoundError' }, 404) // measured shape aside, a 404
+    if (path === '/session/ses_notes' && req.method === 'GET') return json({ id: 'ses_notes', directory: '/home/u/repo/web', path: 'web', permission: [] })
+    if (path === '/session/ses_notes/message' && req.method === 'POST') return json({ echoed: JSON.parse(body) })
     if (path === '/session/ses_slow/message') { res.on('close', () => seen.push({ aborted: '/session/ses_slow/message' })); return } // never answers; res 'close' = the caller went away (req 'close' already fired once the body was read)
     if (path === '/event') {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -53,7 +56,7 @@ async function rig(t, { opencodeUrl, connectorOptions = {} } = {}) {
   const secret = newRelaySecret()
   const connector = await startConnector({
     pairings: [{ name: 'test-box', computerId: 'cmp_test', secret, relay: relay.url(), opencodeUrl: opencodeUrl || oc.url, password: PASSWORD }],
-    flushMs: 40, log: () => {}, ...connectorOptions,
+    flushMs: 40, log: () => {}, notesPluginPath: '/nonexistent/witbitz-notes.js', ...connectorOptions, // this computer's installed plugin must not change these tests
   })
   const got = []
   const client = new RelayPeer({ secret, role: 'client', relay: relay.url(), onMessage: (m) => got.push(m) })
@@ -281,4 +284,93 @@ test('KEYS: /config and /config/providers reach the page without a single creden
   const prov = JSON.parse((await call('GET', '/config/providers')).b)
   assert.deepEqual(prov.providers.map((x) => x.id), ['anthropic', 'trustedrouter'])
   assert.equal(prov.default.anthropic, 'claude-sonnet-4-6')
+})
+
+// ── attachments, the Claude Code way (docs/code-attachments.md) ──────────────────────────────────────────────────────
+// Measured (opencode 1.18.30): OpenCode refuses an Excel or Word file part for every model; PATCH /session/:id APPENDS a
+// permission rule to a session that already exists.
+test('ATTACHMENTS: files in a message are saved on the computer and OpenCode gets a note — plus, once, the folder rule', async (t) => {
+  const { mkdtempSync, existsSync, readFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { parseAttachmentNote } = await import('../spaces/public/codeAttachments.js')
+  const attachRoot = mkdtempSync(join(tmpdir(), 'wb-conn-att-'))
+  const { call, oc, got } = await rig(t, { connectorOptions: { attachRoot, readTextFor: () => async () => '| Q3 | ZUCCHINI-771 |' } })
+  assert.ok(got.filter((m) => m.t === 'hello').at(-1).caps.includes('attachments'), 'the page learns this connector saves files')
+  const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  const turn = { parts: [{ type: 'text', text: 'Q3?' }, { type: 'file', mime: XLSX, filename: 'budget.xlsx', url: `data:${XLSX};base64,${Buffer.from('PK-xlsx').toString('base64')}` }] }
+  const r = await call('POST', '/session/ses_1/message?directory=%2Fw', turn)
+  assert.equal(r.st, 200)
+  const sent = JSON.parse(r.b).echoed
+  assert.equal(sent.parts.some((p) => p.type === 'file'), false, 'no file part reaches OpenCode')
+  const [entry] = parseAttachmentNote(sent.parts.at(-1).text)
+  assert.equal(sent.parts.at(-1).synthetic, true)
+  assert.equal(readFileSync(join(attachRoot, 'ses_1', entry.file), 'utf8'), 'PK-xlsx')
+  assert.match(readFileSync(join(attachRoot, 'ses_1', entry.copy), 'utf8'), /ZUCCHINI-771/)
+  const patches = () => oc.seen.filter((s) => s.method === 'PATCH' && s.url.startsWith('/session/ses_1'))
+  assert.equal(patches().length, 1)
+  assert.deepEqual(JSON.parse(patches()[0].body), { permission: [{ permission: 'external_directory', pattern: `${attachRoot}/ses_1/*`, action: 'allow' }] })
+  assert.match(patches()[0].url, /directory=%2Fw/, 'scoped to the session\'s project like every other call')
+  await call('POST', '/session/ses_1/message?directory=%2Fw', turn)
+  assert.equal(patches().length, 1, 'the rule is added once per session')
+
+  // the page gets the file back from the connector itself — OpenCode never sees the route
+  const back = await call('GET', `/witbitz/attachment?session=ses_1&file=${encodeURIComponent(entry.file)}`)
+  assert.equal(back.st, 200)
+  assert.equal(Buffer.from(JSON.parse(back.b).b64, 'base64').toString(), 'PK-xlsx')
+  assert.equal((await call('GET', '/witbitz/attachment?session=ses_1&file=..%2F..%2Fpairings.json')).st, 400)
+  assert.equal(oc.seen.some((s) => s.url.startsWith('/witbitz')), false)
+
+  // deleting the session takes its files along
+  assert.equal((await call('DELETE', '/session/ses_1?directory=%2Fw')).st, 200)
+  assert.ok(await until(() => !existsSync(join(attachRoot, 'ses_1'))), 'the session folder is gone')
+})
+
+test('ATTACHMENTS: a turn for a session OpenCode does not have saves nothing (an invented id must not get a folder)', async (t) => {
+  const { mkdtempSync, readdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const attachRoot = mkdtempSync(join(tmpdir(), 'wb-conn-att-'))
+  const { call, oc } = await rig(t, { connectorOptions: { attachRoot } })
+  const r = await call('POST', '/session/ses_nope/message', { parts: [{ type: 'file', mime: 'text/plain', filename: 'a.txt', url: `data:text/plain;base64,${Buffer.from('x').toString('base64')}` }] })
+  assert.equal(r.st, 404)
+  assert.deepEqual(readdirSync(attachRoot), [])
+  assert.equal(oc.seen.some((s) => s.url.startsWith('/session/ses_nope/message')), false)
+})
+
+test('ATTACHMENTS: a file over the limit refuses the turn with a reason, and OpenCode never gets it', async (t) => {
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { call, oc } = await rig(t, { connectorOptions: { attachRoot: mkdtempSync(join(tmpdir(), 'wb-conn-att-')), attachMaxFileBytes: 4 } })
+  const r = await call('POST', '/session/ses_1/message', { parts: [{ type: 'file', mime: 'text/plain', filename: 'notes.txt', url: `data:text/plain;base64,${Buffer.from('too long').toString('base64')}` }] })
+  assert.equal(r.st, 413)
+  assert.match(JSON.parse(r.b).error, /notes\.txt is over/)
+  assert.equal(oc.seen.some((s) => s.url.startsWith('/session/ses_1/message')), false)
+})
+
+// ── project notes (tools/opencode-plugins/witbitz-notes.js) ─────────────────────────────────────────────────────────
+test('NOTES: once per session, its project\'s notes folder reads without asking and confidential notes still ask', async (t) => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { createHash } = await import('node:crypto')
+  const dir = mkdtempSync(join(tmpdir(), 'wb-conn-notes-'))
+  writeFileSync(join(dir, 'witbitz-notes.js'), '// installed')
+  const { call, oc } = await rig(t, { connectorOptions: { notesRoot: '/n', notesPluginPath: join(dir, 'witbitz-notes.js') } })
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { parts: [{ type: 'text', text: 'hi' }] })
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { parts: [{ type: 'text', text: 'again' }] })
+  const patches = oc.seen.filter((s) => s.method === 'PATCH' && s.url.startsWith('/session/ses_notes'))
+  const key = `repo-${createHash('sha1').update('/home/u/repo').digest('hex').slice(0, 8)}`
+  assert.equal(patches.length, 1, 'once per session')
+  assert.deepEqual(JSON.parse(patches[0].body), { permission: [
+    { permission: 'external_directory', pattern: `/n/${key}/*`, action: 'allow' },
+    { permission: 'external_directory', pattern: `/n/${key}/confidential/*`, action: 'ask' },
+  ] }, 'the git root (directory minus path) names the folder the plugin uses')
+})
+
+test('NOTES: without the plugin installed the connector adds nothing', async (t) => {
+  const { call, oc } = await rig(t, { connectorOptions: { notesRoot: '/n', notesPluginPath: '/nonexistent/witbitz-notes.js' } })
+  await call('POST', '/session/ses_notes/message', { parts: [{ type: 'text', text: 'hi' }] })
+  assert.equal(oc.seen.some((s) => s.method === 'PATCH' || (s.method === 'GET' && s.url.split('?')[0] === '/session/ses_notes')), false)
 })

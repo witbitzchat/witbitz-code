@@ -105,7 +105,7 @@ test('the allowlist admits exactly the calls the Code section makes, and nothing
   const yes = [
     ['GET', '/experimental/session?archived=true'], ['GET', '/agent'], ['GET', '/api/model'], ['GET', '/config'], ['GET', '/config/providers'],
     ['POST', '/session'], ['GET', '/session/ses_abc123/message?directory=%2Fhome%2Fu'], ['POST', '/session/ses_abc/message'],
-    ['POST', '/session/ses_abc/abort'], ['POST', '/session/ses_abc/permissions/per_1'], ['PATCH', '/session/ses_abc'],
+    ['POST', '/session/ses_abc/abort'], ['POST', '/session/ses_abc/permissions/per_1'], ['POST', '/permission/per_1/reply'], ['PATCH', '/session/ses_abc'],
     ['DELETE', '/session/ses_abc?directory=%2Fx'],
     // the New-session folder picker: the computer's home, and a folder listing (names only). Neither raises the
     // ceiling — a session the page can already create reads files with `read`/`list` allowed.
@@ -113,6 +113,7 @@ test('the allowlist admits exactly the calls the Code section makes, and nothing
     // the agent's question tool: pending questions, and the answer (or the dismissal) — inside the agent loop
     ['GET', '/session/ses_abc/todo?directory=%2Fx'], // the live todo list
     ['POST', '/session/ses_abc/revert'], ['POST', '/session/ses_abc/unrevert'], ['POST', '/session/ses_abc/summarize'], // /undo /redo /compact
+    ['GET', '/session/status?directory=%2Fx'], // which sessions are running, for the list
     ['GET', '/command?directory=%2Fx'], // the "/" menu READS the commands; running one is an ordinary message (codeCommands.js)
     ['GET', '/question?directory=%2Fx'], ['POST', '/question/que_09acc14a40015iMUb0LeM04Edd/reply'], ['POST', '/question/que_1/reject'],
   ]
@@ -120,11 +121,12 @@ test('the allowlist admits exactly the calls the Code section makes, and nothing
   const no = [
     ['GET', '/event'], ['POST', '/session/ses_abc/shell'], ['POST', '/session/ses_abc/command'], ['GET', '/file/content?path=%2Fetc%2Fpasswd'],
     ['POST', '/file'], ['GET', '/file/status'], ['GET', '/path/x'],
-    ['POST', '/session/ses_abc/todo'], ['GET', '/session/./todo'], ['GET', '/session/ses_abc/revert'], ['POST', '/session/ses_abc/revert/x'], ['GET', '/session/ses_abc/unrevert'], ['POST', '/session/ses_abc/summarize/x'], ['POST', '/session/ses_abc/share'],
+    ['POST', '/session/ses_abc/todo'], ['GET', '/session/./todo'], ['GET', '/session/ses_abc/revert'], ['POST', '/session/ses_abc/revert/x'], ['GET', '/session/ses_abc/unrevert'], ['POST', '/session/ses_abc/summarize/x'], ['POST', '/session/status'], ['GET', '/session/status/x'], ['POST', '/session/ses_abc/share'],
     ['POST', '/session/ses_abc/command'], ['GET', '/command/review'], // the command route runs !`…` from the arguments — never
     ['POST', '/question'], ['GET', '/question/que_1/reply'], ['POST', '/question/que_1'], ['POST', '/question/./reply'], ['POST', '/question/que_1/reply/x'],
     ['PUT', '/session/ses_abc'], ['GET', '/session/../config'], ['GET', '//agent'], ['GET', 'agent'], ['DELETE', '/session'],
     ['POST', '/session/ses_abc/permissions/per_1/extra'], ['GET', '/agent#x'],
+    ['GET', '/permission'], ['POST', '/permission'], ['GET', '/permission/per_1/reply'], ['POST', '/permission/per_1/reply/x'],
   ]
   for (const [m, p] of no) assert.equal(allowedRequest(m, p), false, `${m} ${p}`)
   assert.equal(allowedEventPath('/event'), true)
@@ -197,7 +199,7 @@ test('RelayPeer: a burst of concurrent sends arrives complete and in order (seal
 })
 
 test('allowlist: a "." or ".." path segment never passes — fetch would collapse it onto a route that is not listed', () => {
-  for (const [m, p] of [['POST', '/session/./message'], ['DELETE', '/session/.'], ['GET', '/session/../message'], ['PATCH', '/session/..'], ['POST', '/session/ses_1/permissions/.'], ['GET', '/session/.hidden/message']]) {
+  for (const [m, p] of [['POST', '/session/./message'], ['DELETE', '/session/.'], ['GET', '/session/../message'], ['PATCH', '/session/..'], ['POST', '/session/ses_1/permissions/.'], ['POST', '/permission/./reply'], ['GET', '/session/.hidden/message']]) {
     assert.equal(allowedRequest(m, p), false, `${m} ${p}`)
   }
   assert.equal(allowedRequest('GET', '/session/ses.with.dots_1/message'), true, 'an id that merely contains dots is fine')

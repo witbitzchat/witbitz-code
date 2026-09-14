@@ -272,6 +272,9 @@ const ALLOW = [
   ['POST', `/session/${SEG}/message`],
   ['POST', `/session/${SEG}/abort`],
   ['POST', `/session/${SEG}/permissions/${SEG}`],
+  // The same answer with a MESSAGE for the model — how a person's Deny says "stop and ask me" (the route above takes none).
+  // It grants nothing the route above does not: it only answers an ask that is already pending.
+  ['POST', `/permission/${SEG}/reply`],
   ['PATCH', `/session/${SEG}`],
   ['DELETE', `/session/${SEG}`],
   // New session's folder picker: the computer's home, and folder listings under it (names, never contents). Neither
@@ -292,6 +295,7 @@ const ALLOW = [
   ['POST', `/session/${SEG}/revert`],
   ['POST', `/session/${SEG}/unrevert`],
   ['POST', `/session/${SEG}/summarize`],
+  ['GET', '/session/status'], // which sessions are running a turn — for the list (codeStatus.js); reads only
 ].map(([m, p]) => [m, new RegExp(`^${p}$`)])
 
 /** Is `method path?query` something the connector will forward? The event stream is NOT here: it is `sub`, not a req. */

@@ -17,6 +17,8 @@ import json
 import os
 import re
 import socket
+import tempfile
+from pathlib import Path
 
 import pytest
 from conftest import _PRELUDE, NODE, js_source, node_env, requires_node, run_node
@@ -46,6 +48,7 @@ class Rig:
         self.relay = await fake_relay()
         self.oc = FakeOpenCode(auto_events=EVENTS)
         self.secret = new_relay_secret()
+        self.attach_root = Path(tempfile.mkdtemp(prefix="wb-conf-att-"))  # never the real ~/.witbitz/code/attachments
         return self
 
     def pairing(self, **kw):
@@ -115,7 +118,8 @@ class PyClient:
 
 # ── the two connectors behind one interface ───────────────────────────────────────────────────────────────────────────
 class PyConnector:
-    OPTION_NAMES = {"maxSenders": "max_senders", "maxResponseBytes": "max_response_bytes", "autoDir": "auto_dir", "autoPollMs": "auto_poll_ms"}
+    OPTION_NAMES = {"maxSenders": "max_senders", "maxResponseBytes": "max_response_bytes", "autoDir": "auto_dir", "autoPollMs": "auto_poll_ms",
+                    "attachRoot": "attach_root", "attachMaxFileBytes": "attach_max_file_bytes"}
 
     def __init__(self, rig, timeout_ms, **options):
         self.rig, self.timeout_ms, self.c = rig, timeout_ms, None
@@ -169,7 +173,7 @@ async def conformance(rig: Rig, connector) -> None:
         await client.start()
         hello = client.hellos()[-1]
         assert set(hello) == {"t", "ver", "name", "computerId", "k", "ts", "caps", "auto"} and hello["ver"] == "1"
-        assert (hello["caps"], hello["auto"]) == (["auto"], []), "both connectors can do Auto mode (test_auto.py has the rest)"
+        assert (hello["caps"], hello["auto"]) == (["auto", "attachments"], []), "both connectors do Auto mode (test_auto.py) and save attachments"
         assert (hello["name"], hello["computerId"]) == ("test-box", "cmp_test") and isinstance(hello["ts"], int)
         assert re.fullmatch(r"[A-Za-z0-9_-]{24}", hello["k"]), "18 random bytes, base64url"
 
@@ -258,6 +262,33 @@ async def conformance(rig: Rig, connector) -> None:
         assert len(rig.hits("/session/ses_1/message")) == 2, "the replayed turn never reached OpenCode"
         assert (await client.call("GET", "/agent", k=old))["st"] == 409, "the old nonce is dead"
         assert (await client.call("GET", "/agent"))["st"] == 200, "the new one works"
+
+        # ATTACHMENTS (docs/code-attachments.md): a file in a turn is saved under the attachments folder, OpenCode gets a note
+        # in its place, the session gets the folder rule ONCE, the page gets the file back from the connector itself, and a
+        # deleted session takes its files along. A text file needs no Tinfoil copy, so both connectors behave the same here.
+        attach_root = rig.attach_root
+        turn = {"parts": [{"type": "text", "text": "read it"}, {"type": "file", "mime": "text/plain", "filename": "notes.txt",
+                                                                 "url": "data:text/plain;base64," + base64.b64encode(b"ZUCCHINI-771").decode()}]}
+        r = await client.call("POST", "/session/ses_1/message?directory=%2Fw", turn)
+        sent = json.loads(r["b"])["echoed"]
+        name = "notes.txt"
+        staged = hashlib.sha256(b"ZUCCHINI-771").hexdigest()[:8] + "-" + name
+        assert r["st"] == 200 and [p["type"] for p in sent["parts"]] == ["text", "text"] and sent["parts"][1]["synthetic"] is True
+        assert sent["parts"][1]["text"] == (
+            "The user attached files. They are saved on this computer — open them with the read tool.\n"
+            f"• notes.txt — 12 B — {attach_root}/ses_1/{staged}")
+        assert (attach_root / "ses_1" / staged).read_bytes() == b"ZUCCHINI-771"
+        patches = [h for h in rig.oc.seen_copy() if h.get("method") == "PATCH" and h["url"].startswith("/session/ses_1")]
+        assert len(patches) == 1 and json.loads(patches[0]["body"]) == {"permission": [{"permission": "external_directory", "pattern": f"{attach_root}/ses_1/*", "action": "allow"}]}
+        assert "directory=%2Fw" in patches[0]["url"]
+        await client.call("POST", "/session/ses_1/message?directory=%2Fw", turn)
+        assert len([h for h in rig.oc.seen_copy() if h.get("method") == "PATCH"]) == 1, "the rule is added once per session"
+        back = await client.call("GET", f"/witbitz/attachment?session=ses_1&file={staged}")
+        assert back["st"] == 200 and json.loads(back["b"]) == {"name": name, "mime": "text/plain", "size": 12, "b64": base64.b64encode(b"ZUCCHINI-771").decode()}
+        assert (await client.call("GET", "/witbitz/attachment?session=ses_1&file=..%2F..%2Fpairings.json"))["st"] == 400
+        assert not any(h.get("url", "").startswith("/witbitz") for h in rig.oc.seen_copy()), "OpenCode never sees the route"
+        assert (await client.call("DELETE", "/session/ses_1?directory=%2Fw"))["st"] == 200
+        assert await until(lambda: not (attach_root / "ses_1").exists()), "a deleted session takes its files along"
     finally:
         await client.peer.aclose()
         await connector.stop()
@@ -266,7 +297,7 @@ async def conformance(rig: Rig, connector) -> None:
 def test_conformance_python_connector():
     async def go():
         async with Rig() as rig:
-            await conformance(rig, PyConnector(rig, 2500))
+            await conformance(rig, PyConnector(rig, 2500, attachRoot=str(rig.attach_root)))
 
     run(go())
 
@@ -275,7 +306,7 @@ def test_conformance_python_connector():
 def test_conformance_js_connector_the_same_sequence():
     async def go():
         async with Rig() as rig:
-            await conformance(rig, JsConnector(rig, 2500))
+            await conformance(rig, JsConnector(rig, 2500, attachRoot=str(rig.attach_root)))
 
     run(go())
 

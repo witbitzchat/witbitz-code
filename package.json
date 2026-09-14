@@ -8,9 +8,13 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "build": "bash tools/build-witbitz-code.sh",
-    "test": "node --test tools/*.test.mjs spaces/test/*.test.mjs",
+    "test": "node --test tools/*.test.mjs spaces/test/*.test.mjs agent/*.test.mjs",
     "test:relay": "node --test relay/relay.test.mjs",
     "test:python": "cd packages/witbitz-code-py && python3 -m pytest -q"
+  },
+  "dependencies": {
+    "@noble/curves": "1.9.6",
+    "@tinfoilsh/verifier": "1.2.1"
   },
   "devDependencies": {
     "esbuild": "0.28.2",

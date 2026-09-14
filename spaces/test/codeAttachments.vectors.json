@@ -1,0 +1,300 @@
+{
+ "_comment": "spaces/public/codeAttachments.js ⇄ packages/witbitz-code-py attachments.py — generated from the JS module; both are tested against it",
+ "safeName": [
+  [
+   "budget.xlsx",
+   "budget.xlsx"
+  ],
+  [
+   "../../etc/passwd",
+   "passwd"
+  ],
+  [
+   "C:\\Users\\me\\Q3 plan (final).docx",
+   "Q3 plan (final).docx"
+  ],
+  [
+   ".env",
+   "_env"
+  ],
+  [
+   "רבעון.xlsx",
+   "_.xlsx"
+  ],
+  [
+   "",
+   "file"
+  ],
+  [
+   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.pdf",
+   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.pdf"
+  ],
+  [
+   "a  b__c.PDF",
+   "a  b_c.PDF"
+  ],
+  [
+   "שלום",
+   "file"
+  ],
+  [
+   "..",
+   "file"
+  ],
+  [
+   "report (1).v2.tar.gz",
+   "report (1).v2.tar.gz"
+  ]
+ ],
+ "stagedFileName": [
+  [
+   "3f9a1c2e77aa",
+   "budget.xlsx",
+   "3f9a1c2e-budget.xlsx"
+  ]
+ ],
+ "formatSize": [
+  [
+   0,
+   "0 B"
+  ],
+  [
+   900,
+   "900 B"
+  ],
+  [
+   1023,
+   "1023 B"
+  ],
+  [
+   1024,
+   "1.0 KB"
+  ],
+  [
+   6512,
+   "6.4 KB"
+  ],
+  [
+   90000,
+   "87.9 KB"
+  ],
+  [
+   1048575,
+   "1.0 MB"
+  ],
+  [
+   2400000,
+   "2.3 MB"
+  ],
+  [
+   1101004,
+   "1.0 MB"
+  ],
+  [
+   26214400,
+   "25.0 MB"
+  ]
+ ],
+ "note": {
+  "entries": [
+   {
+    "name": "budget.xlsx",
+    "size": 6512,
+    "path": "/home/u/.witbitz/code/attachments/ses_abc/3f9a1c2e-budget.xlsx",
+    "copy": "/home/u/.witbitz/code/attachments/ses_abc/3f9a1c2e-budget.xlsx.md"
+   },
+   {
+    "name": "photo.png",
+    "size": 2400000,
+    "path": "/home/u/.witbitz/code/attachments/ses_abc/0a1b2c3d-photo.png",
+    "inline": true
+   },
+   {
+    "name": "scan — final.pdf",
+    "size": 90000,
+    "path": "/home/u/.witbitz/code/attachments/ses_abc/deadbeef-scan _ final.pdf",
+    "noCopy": "no Tinfoil key on this computer"
+   },
+   {
+    "name": "rows.csv",
+    "size": 12,
+    "path": "/home/u/.witbitz/code/attachments/ses_abc/12345678-rows.csv"
+   },
+   {
+    "name": "long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long name.txt",
+    "size": 5,
+    "path": "/home/u/.witbitz/code/attachments/ses_abc/99999999-long.txt"
+   }
+  ],
+  "text": "The user attached files. They are saved on this computer — open them with the read tool.\n• budget.xlsx — 6.4 KB — /home/u/.witbitz/code/attachments/ses_abc/3f9a1c2e-budget.xlsx\n  Its text — open THIS with the read tool, not the original: /home/u/.witbitz/code/attachments/ses_abc/3f9a1c2e-budget.xlsx.md\n• photo.png — 2.3 MB — /home/u/.witbitz/code/attachments/ses_abc/0a1b2c3d-photo.png\n  Shown to you with this message.\n• scan - final.pdf — 87.9 KB — /home/u/.witbitz/code/attachments/ses_abc/deadbeef-scan _ final.pdf\n  No text copy (no Tinfoil key on this computer) — open it with the read tool if you can; otherwise ask the user before converting it.\n• rows.csv — 12 B — /home/u/.witbitz/code/attachments/ses_abc/12345678-rows.csv\n• long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long  — 5 B — /home/u/.witbitz/code/attachments/ses_abc/99999999-long.txt",
+  "parsed": [
+   {
+    "name": "budget.xlsx",
+    "size": "6.4 KB",
+    "session": "ses_abc",
+    "file": "3f9a1c2e-budget.xlsx",
+    "copy": "3f9a1c2e-budget.xlsx.md",
+    "inline": false
+   },
+   {
+    "name": "photo.png",
+    "size": "2.3 MB",
+    "session": "ses_abc",
+    "file": "0a1b2c3d-photo.png",
+    "copy": "",
+    "inline": true
+   },
+   {
+    "name": "scan - final.pdf",
+    "size": "87.9 KB",
+    "session": "ses_abc",
+    "file": "deadbeef-scan _ final.pdf",
+    "copy": "",
+    "inline": false
+   },
+   {
+    "name": "rows.csv",
+    "size": "12 B",
+    "session": "ses_abc",
+    "file": "12345678-rows.csv",
+    "copy": "",
+    "inline": false
+   },
+   {
+    "name": "long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long ",
+    "size": "5 B",
+    "session": "ses_abc",
+    "file": "99999999-long.txt",
+    "copy": "",
+    "inline": false
+   }
+  ]
+ },
+ "notNotes": [
+  "What is in the pdf",
+  "The user attached files, but this is just prose.",
+  ""
+ ],
+ "validRef": [
+  [
+   "ses_abc",
+   "3f9a1c2e-budget.xlsx",
+   true
+  ],
+  [
+   "ses_abc",
+   "3f9a1c2e-budget.xlsx.md",
+   true
+  ],
+  [
+   "ses_abc",
+   "../x",
+   false
+  ],
+  [
+   "ses_abc",
+   "3f9a1c2e-a/b",
+   false
+  ],
+  [
+   "../ses",
+   "3f9a1c2e-a",
+   false
+  ],
+  [
+   "ses_abc",
+   "budget.xlsx",
+   false
+  ],
+  [
+   "ses_abc",
+   "3f9a1c2e-.hidden",
+   false
+  ],
+  [
+   "",
+   "3f9a1c2e-a",
+   false
+  ],
+  [
+   "ses.abc",
+   "3f9a1c2e-a",
+   false
+  ],
+  [
+   "ses_abc",
+   "3f9a1c2e-a..b",
+   false
+  ]
+ ],
+ "needsTextCopy": [
+  [
+   "application/pdf",
+   "a.pdf",
+   true
+  ],
+  [
+   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+   "b.xlsx",
+   true
+  ],
+  [
+   "application/octet-stream",
+   "deck.pptx",
+   true
+  ],
+  [
+   "image/png",
+   "a.png",
+   false
+  ],
+  [
+   "text/plain",
+   "b.txt",
+   false
+  ],
+  [
+   "text/csv",
+   "c.csv",
+   false
+  ],
+  [
+   "application/json",
+   "d.json",
+   false
+  ],
+  [
+   "application/octet-stream",
+   "notes.md",
+   false
+  ],
+  [
+   "",
+   "blob",
+   true
+  ]
+ ],
+ "mimeForFile": [
+  [
+   "3f9a1c2e-scan.pdf",
+   "application/pdf"
+  ],
+  [
+   "3f9a1c2e-budget.xlsx.md",
+   "text/markdown"
+  ],
+  [
+   "3f9a1c2e-photo.JPG",
+   "image/jpeg"
+  ],
+  [
+   "3f9a1c2e-thing.bin",
+   "application/octet-stream"
+  ],
+  [
+   "3f9a1c2e-noext",
+   "application/octet-stream"
+  ]
+ ],
+ "route": "/witbitz/attachment"
+}

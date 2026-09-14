@@ -135,7 +135,10 @@ class LoopOpenCode:
     """tools/code-auto-runner.test.mjs's fake: pending asks, a transcript with a model, a reviewer that answers."""
 
     def __init__(self, *, reviewer_text: str = '{"decision":"allow","severity":10,"rule":"allow:tests","reason":"the user asked for tests"}',
-                 reviewer_delay: float = 0, reply_status: int = 200, with_model: bool = True) -> None:
+                 reviewer_delay: float = 0, reply_status: int = 200, with_model: bool = True,
+                 parents: dict[str, str] | None = None, agents: list[dict] | None = None) -> None:
+        parents = parents or {}
+        agents = agents or []
         self.seen: list[dict] = []
         self.pending: list[dict] = []
         self.sessions: dict[str, Any] = {}
@@ -176,6 +179,14 @@ class LoopOpenCode:
                     with outer.lock:
                         outer.pending[:] = [p for p in outer.pending if p["id"] != m.group(1)]
                     return self._json(True)
+                if self.command == "GET" and path == "/agent":
+                    return self._json(agents)
+                sm = re.fullmatch(r"/session/(ses_[a-z]+)", path)
+                if self.command == "GET" and sm:
+                    return self._json({"id": sm.group(1), **({"parentID": parents[sm.group(1)]} if sm.group(1) in parents else {})})
+                mm = re.fullmatch(r"/session/([^/]+)/message", path)
+                if self.command == "GET" and mm and mm.group(1) in parents:
+                    return self._json([{"info": {"id": "c1", "role": "user"}, "parts": [{"type": "text", "text": "THE PARENT MODEL WROTE THIS TASK PROMPT"}]}])
                 if self.command == "GET" and re.fullmatch(r"/session/[^/]+/message", path):
                     msgs = [{"info": {"id": "m1", "role": "user"}, "parts": [{"type": "text", "text": "please run the test suite"}]}]
                     if with_model:
@@ -407,6 +418,85 @@ def test_loop_auto_is_remembered_on_the_computer_in_the_js_connectors_format(tmp
     with_runner(tmp_path, body)
 
 
+# ── subagents and held refusals (tools/code-auto-runner.test.mjs, the same cases) ─────────────────────────────────────
+def test_loop_a_subagents_ask_is_decided_under_its_parents_auto_against_what_the_person_asked(tmp_path):
+    async def body(oc, runner, verdicts, make, client):
+        runner.set_auto("ses_main", DIR, True)
+        oc.ask(sessionID="ses_child", permission="bash", patterns=["npm test"], metadata={"command": "npm test"})
+        assert await until(lambda: oc.replies(), 6)
+        assert oc.replies()[0]["body"] == {"reply": "once"}
+        text = oc.calls("POST", r"/session/ses_rev\d+/message")[0]["body"]["parts"][0]["text"]
+        assert "please run the test suite" in text and "PARENT MODEL WROTE" not in text
+        assert await until(lambda: verdicts, 2)
+        assert verdicts[0]["sessionID"] == "ses_child"
+    with_runner(tmp_path, body, parents={"ses_child": "ses_main"})
+
+
+def test_loop_a_session_with_no_auto_ancestor_is_left_alone(tmp_path):
+    async def body(oc, runner, verdicts, make, client):
+        runner.set_auto("ses_main", DIR, True)
+        oc.ask(sessionID="ses_child", permission="edit", patterns=["src/a.ts"])
+        await asyncio.sleep(0.25)
+        assert oc.replies() == []
+    with_runner(tmp_path, body, parents={"ses_child": "ses_other"})
+
+
+def test_loop_a_refusal_waits_until_nothing_else_is_pending_so_it_cannot_cancel_an_allow(tmp_path):
+    async def body(oc, runner, verdicts, make, client):
+        runner.set_auto("ses_main", DIR, True)
+        oc.ask(permission="bash", patterns=["rm -rf ~"], metadata={"command": "rm -rf ~"})
+        oc.ask(permission="bash", patterns=["npm test"], metadata={"command": "npm test"})
+        assert await until(lambda: len(oc.replies()) >= 2, 8)
+        assert [r["body"]["reply"] for r in oc.replies()] == ["once", "reject"]
+        denies = [v for v in verdicts if v["action"] == "deny"]
+        assert await until(lambda: [v for v in verdicts if v["action"] == "deny" and v["answered"] is True], 2)
+        assert denies[0]["answered"] is None, "the page hears the refusal at once, as held"
+    with_runner(tmp_path, body, reviewer_delay=0.3)
+
+
+def test_loop_a_refusal_held_behind_a_persons_card_is_sent_once_that_card_is_answered(tmp_path):
+    async def body(oc, runner, verdicts, make, client):
+        runner.set_auto("ses_main", DIR, True)
+        oc.ask(permission="bash", patterns=["rm -rf ~"], metadata={"command": "rm -rf ~"})
+        oc.ask(permission="bash", patterns=["git push"], metadata={"command": "git push"})
+        await asyncio.sleep(0.5)
+        assert oc.replies() == [], "held while the person still has a card"
+        with oc.lock:
+            oc.pending[:] = [p for p in oc.pending if p["patterns"][0] != "git push"]
+        assert await until(lambda: oc.replies(), 4)
+        assert oc.replies()[0]["body"]["reply"] == "reject"
+    with_runner(tmp_path, body, reviewer_text='{"decision":"ask","severity":55,"rule":"ask:push","reason":"not requested"}')
+
+
+def _agent_rules(bash: str) -> list[dict]:
+    return [{"permission": "*", "pattern": "*", "action": "allow"}, {"permission": "bash", "pattern": "*", "action": bash},
+            {"permission": "edit", "pattern": "*", "action": "deny"}, {"permission": "webfetch", "pattern": "*", "action": "ask"},
+            {"permission": "websearch", "pattern": "*", "action": "ask"}]
+
+
+def test_loop_starting_a_subagent_whose_commands_ask_is_allowed_without_a_review(tmp_path):
+    async def body(oc, runner, verdicts, make, client):
+        runner.set_auto("ses_main", DIR, True)
+        oc.ask(permission="task", patterns=["explore"], metadata={"description": "Explore", "subagent_type": "explore"})
+        assert await until(lambda: oc.replies(), 4)
+        assert oc.replies()[0]["body"] == {"reply": "once"}
+        assert oc.calls("POST", "/session") == []
+        assert await until(lambda: verdicts, 2)
+        assert verdicts[0]["rule"] == "fast:subagent-asks"
+    with_runner(tmp_path, body, agents=[{"name": "explore", "mode": "subagent", "permission": _agent_rules("ask")}])
+
+
+def test_loop_starting_a_subagent_whose_commands_would_not_ask_is_left_for_the_person(tmp_path):
+    async def body(oc, runner, verdicts, make, client):
+        runner.set_auto("ses_main", DIR, True)
+        oc.ask(permission="task", patterns=["yolo"], metadata={"description": "Do it", "subagent_type": "yolo"})
+        assert await until(lambda: verdicts, 4)
+        await asyncio.sleep(0.15)
+        assert oc.replies() == []
+        assert verdicts[0]["action"] == "ask" and re.search(r"yolo.*without asking", verdicts[0]["reason"])
+    with_runner(tmp_path, body, agents=[{"name": "yolo", "mode": "subagent", "permission": _agent_rules("allow")}])
+
+
 # ── THE WIRING, both connectors ───────────────────────────────────────────────────────────────────────────────────────
 CONNECTORS = [pytest.param(PyConnector, id="python"), pytest.param(JsConnector, id="js", marks=requires_node)]
 
@@ -420,7 +510,7 @@ def test_wiring_the_page_switches_auto_and_the_verdict_comes_back(make, tmp_path
             client = PyClient(rig.secret, rig.relay.url)
             try:
                 await client.start()
-                assert client.hellos()[-1]["caps"] == ["auto"]
+                assert client.hellos()[-1]["caps"] == ["auto", "attachments"]
                 # a stale nonce cannot switch it: a recording cannot turn Auto on
                 await client.peer.send({"t": "auto", "k": "not-the-nonce", "sid": "ses_main", "dir": DIR, "on": True})
                 await asyncio.sleep(0.3)

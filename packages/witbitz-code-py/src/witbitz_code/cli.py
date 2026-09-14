@@ -23,6 +23,7 @@ import httpx
 from . import __version__
 from . import pair as pair_cmd
 from . import pairings as pp
+from . import policy
 from ._js import to_number, truthy
 from .connector import pairings_for_port, start_connector
 
@@ -105,7 +106,10 @@ async def _wait_for_stop(stop: _Stop, child: asyncio.subprocess.Process | None) 
 
 async def _start_opencode(exe: str, port: int) -> asyncio.subprocess.Process:
     password = pp.read_env_password()
-    env = {**os.environ, **({"OPENCODE_SERVER_PASSWORD": password} if password else {})}
+    # Subagents ask like their parent, and a refused call does not end the turn (policy.py) — merged by OpenCode over the
+    # user's own config, which is never written.
+    env = {**os.environ, **({"OPENCODE_SERVER_PASSWORD": password} if password else {}),
+           "OPENCODE_CONFIG_CONTENT": policy.config_content(os.environ.get("OPENCODE_CONFIG_CONTENT"))}
     # The resolved path, not "opencode": on Windows the npm install is opencode.cmd, which a bare name does not find.
     # Its own process group there, so stopping it can take the whole tree (cmd.exe → node) with it.
     extra = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {}

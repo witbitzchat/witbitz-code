@@ -21,6 +21,16 @@ type.
   Read-only commands inside the project and ordinary edits are allowed, and the session's own model reviews the rest
   with no tools. Anything short of a clear, low-risk allow still comes to you, and nothing is granted "always". Decisions
   are logged as digests in `~/.witbitz/code/auto-log.jsonl`. Design: [`docs/code-auto-mode.md`](docs/code-auto-mode.md).
+- **Subagents ask like the session that started them.** OpenCode does not pass a session's "ask" rules on to the agents
+  its task tool starts, so `serve` gives OpenCode's `explore` and `general` agents their own ask rules for shell commands,
+  edits and web fetches (merged over your OpenCode config, which is never written). A refused call no longer ends the turn:
+  the agent is told why. Auto lets an agent start only when that agent's own commands will ask.
+  [`tools/code-opencode-policy.mjs`](tools/code-opencode-policy.mjs) has the details.
+- **Confidential models are enforced here** (Node connector). TrustedRouter calls for a model labelled confidential go
+  through a local proxy that requires confidential routing and checks each reply's signed receipt; images and documents
+  for text-only confidential models are read through Tinfoil with your own key (`witbitz-code tinfoil-key`).
+- **Attachments are saved on your computer** (`~/.witbitz/code/attachments/<session>/`), where the agent reads them like
+  any file. Design: [`docs/code-attachments.md`](docs/code-attachments.md).
 
 Setup guide: **[witbitz.chat/docs/opencode.md](https://witbitz.chat/docs/opencode.md)**.
 The full design — wire format, key derivation, replay protection, the relay's limits — is
@@ -44,7 +54,8 @@ witbitz-code pair --name "my laptop"
 witbitz-code serve
 ```
 
-Commands, in both: `pair`, `serve [--port N]`, `status`, `rotate`, `unpair [--account EMAIL]`, `version`.
+Commands, in both: `pair`, `serve [--port N]`, `status`, `rotate`, `unpair [--account EMAIL]`, `version`. The Node build
+also has `tinfoil-key` and runs the confidential-model proxy; the Python package does not have the proxy yet.
 
 ## Verify the download is this source
 
@@ -76,10 +87,14 @@ production.
 | `spaces/public/deviceLink.js`, `recovery.js`, `compress.js`, `qrRender.js` | device link and account sealing used by pairing |
 | `tools/code-auto.mjs`, `tools/code-auto-runner.mjs` | Auto mode: the rules (hard deny, fast allow, the reviewer prompt, verdict parsing) and the loop that answers OpenCode's permission asks |
 | `tools/code-auto.vectors.json` | the shared Auto cases both implementations are tested against |
+| `tools/code-opencode-policy.mjs` | the OpenCode config `serve` merges in: subagents' ask rules, and a refusal that does not end the turn |
+| `tools/code-confidential.mjs`, `agent/` | the confidential-model proxy, and the attestation and receipt verification it uses (TrustedRouter's gateway, Tinfoil) |
+| `tools/code-attachments.mjs`, `spaces/public/codeAttachments.js` | attachments saved on the computer for the agent to read |
+| `tools/opencode-config.mjs`, `tools/opencode-plugins/`, `tools/opencode-commands/` | writing an OpenCode config for TrustedRouter's models, and the project-notes plugin |
 | `spaces/public/downloads/witbitz-code.mjs` | the built single file (a test fails if it is stale) |
 | `relay/relay.mjs` | the relay — a Cloudflare Worker + Durable Object that forwards frames between the sockets on a channel |
 | `packages/witbitz-code-py/` | the Python implementation, tested against the JavaScript one |
-| `docs/opencode-relay.md`, `docs/code-auto-mode.md` | the design: the relay, and Auto mode |
+| `docs/opencode-relay.md`, `docs/code-auto-mode.md`, `docs/code-attachments.md` | the design: the relay, Auto mode, attachments |
 
 Some comments and the design doc refer to parts of the Spaces app that are not in this repository (for example the Code
 page itself, `opencodeApp.js`).
@@ -88,7 +103,7 @@ page itself, `opencodeApp.js`).
 
 ```bash
 npm ci
-npm test              # codec, connector, pairing, page transport, QR, Auto mode, build freshness
+npm test              # codec, connector, pairing, page transport, QR, Auto mode, subagent policy, confidential proxy, attachments, build freshness
 npm run test:relay    # the relay in the Workers runtime (miniflare)
 npm run test:python   # the Python package, including frames, flows and Auto decisions checked against the JavaScript modules
 ```

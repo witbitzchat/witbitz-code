@@ -13,8 +13,12 @@
 // leaked secret must not unlock more than the page itself can do.
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { RelayPeer, allowedRequest, allowedEventPath, projectResponse, RELAY_URL } from '../spaces/public/codeRelay.js'
+import { startConfidentialProxy, proxyPortFor, makeTinfoilReader, tinfoilKey } from './code-confidential.mjs'
+import { stageMessageBody, serveAttachment, removeSessionAttachments, pruneAttachments, attachmentRule, ATTACH_ROOT, MAX_FILE_BYTES } from './code-attachments.mjs' // attachments, the Claude Code way (docs/code-attachments.md)
+import { ATTACHMENT_ROUTE } from '../spaces/public/codeAttachments.js'
+import { WitbitzNotes } from './opencode-plugins/witbitz-notes.js' // project notes: the connector allows reads of a session's notes folder
 import { startAutoRunner } from './code-auto-runner.mjs' // Auto mode: permission asks decided here (docs/code-auto-mode.md)
 
 export const VERSION = '1'
@@ -71,13 +75,25 @@ function sseReader(onData) {
  * Serve the given pairings. Returns { stop, peers } — `peers` is one RelayPeer per pairing.
  * Options exist for tests: fetchImpl, WebSocketImpl, flushMs, log.
  */
-export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000 } = {}) {
+export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN } = {}) {
   const running = []
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs }))
+  try { const n = pruneAttachments(attachRoot); if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`) } catch { /* no folder yet */ }
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath }))
   return { peers: running.map((r) => r.peer), stop: () => { for (const r of running) r.stop() } }
 }
 
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs }) {
+const NOTES_PLUGIN = join(homedir(), '.config', 'opencode', 'plugins', 'witbitz-notes.js') // installed by tools/opencode-config.mjs
+
+// The Tinfoil reader for this computer's key, read at request time (adding a key needs no restart); null without one.
+let readerKey = '', reader = null
+function tinfoilReaderForKey() {
+  const key = tinfoilKey()
+  if (!key) return null
+  if (key !== readerKey) { readerKey = key; reader = makeTinfoilReader({ apiKey: key }) }
+  return reader
+}
+
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath }) {
   const name = pairing.name || hostname()
   const base = String(pairing.opencodeUrl || 'http://127.0.0.1:4096').replace(/\/+$/, '')
   const password = () => pairing.password || parseEnvPassword(existsSync(pairing.envFile || DEFAULT_ENV) ? readFileSync(pairing.envFile || DEFAULT_ENV, 'utf8') : '')
@@ -107,7 +123,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   })
 
   // caps: what this connector can do beyond the requests — a page shows the Auto switch only when `auto` is here.
-  function hello() { if (nonce) peer.send({ t: 'hello', ver: VERSION, name, computerId: pairing.computerId || '', k: nonce, ts: Date.now(), caps: ['auto'], auto: auto ? auto.sessions() : [] }) }
+  function hello() { if (nonce) peer.send({ t: 'hello', ver: VERSION, name, computerId: pairing.computerId || '', k: nonce, ts: Date.now(), caps: ['auto', 'attachments'], auto: auto ? auto.sessions() : [] }) }
 
   async function handle(m) {
     if (!m || typeof m.t !== 'string') return
@@ -126,7 +142,44 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     // Refuse rather than truncate: a shortened id could collide, and `cancel` would look up the long one.
     if (id.length > 64) return reply(400, { error: 'request id longer than 64 characters' })
     if (!current) return reply(409, { error: 'stale: this computer\'s connector changed — reconnecting' })
+    const [path, query = ''] = m.p.split('?')
+    // A saved attachment, for the page's chip (preview, download): answered HERE from the attachments folder, never forwarded.
+    if (m.m === 'GET' && path === ATTACHMENT_ROUTE) {
+      const u = new URLSearchParams(query)
+      const out = serveAttachment({ root: attachRoot, session: u.get('session'), file: u.get('file') })
+      return reply(out.st, out.b)
+    }
     if (!allowedRequest(m.m, m.p)) return reply(403, { error: 'not allowed by the connector' })
+    // ATTACHMENTS (docs/code-attachments.md): the files a turn carries are saved on this computer and the message names them.
+    let body = typeof m.b === 'string' ? m.b : undefined
+    const turnOf = m.m === 'POST' && /^\/session\/([^/]+)\/message$/.exec(path)
+    // PROJECT NOTES (tools/opencode-plugins/witbitz-notes.js): once per session, reads of ITS project's notes folder ask
+    // nothing, and its confidential notes still ask. Only where the plugin is installed; tried once per session.
+    if (turnOf && !notesRuled.has(turnOf[1]) && existsSync(notesPluginPath)) {
+      notesRuled.add(turnOf[1])
+      const s = await sessionFor(turnOf[1], query)
+      const root = s && WitbitzNotes.helpers.rootFromSession(s)
+      if (root) {
+        const dir = `${notesRoot}/${WitbitzNotes.helpers.notesKey(resolve(root))}`
+        await addRules(turnOf[1], query, s, [
+          { permission: 'external_directory', pattern: `${dir}/*`, action: 'allow' },
+          { permission: 'external_directory', pattern: `${dir}/confidential/*`, action: 'ask' }, // last match wins
+        ], 'project notes')
+      }
+    }
+    if (turnOf && body && body.includes('"file"')) {
+      let parsed = null
+      try { parsed = JSON.parse(body) } catch { /* OpenCode answers a malformed body itself */ }
+      if (parsed && Array.isArray(parsed.parts) && parsed.parts.some((p) => p && p.type === 'file' && /^data:/.test(String(p.url || '')))) {
+        // Only for a session OpenCode has — an invented id must not get a folder (security review: disk filling).
+        const known = await sessionFor(turnOf[1], query)
+        if (!known) return reply(404, { error: 'no such session on this computer' })
+        pruneDaily()
+        const staged = await stageMessageBody(parsed, { sessionID: turnOf[1], root: attachRoot, readText: readTextFor(), maxFileBytes: attachMaxFileBytes })
+        if (staged && staged.error) return reply(staged.error.status, { error: staged.error.message })
+        if (staged) { await allowAttachmentReads(turnOf[1], query, known); body = JSON.stringify(staged.body) }
+      }
+    }
     const ctrl = new AbortController()
     inflight.set(id, ctrl)
     let timedOut = false
@@ -135,8 +188,8 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     try {
       const r = await fetchImpl(base + m.p, {
         method: m.m,
-        headers: { ...auth(), ...(typeof m.b === 'string' ? { 'content-type': 'application/json' } : {}) },
-        body: typeof m.b === 'string' ? m.b : undefined,
+        headers: { ...auth(), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+        body,
         signal: ctrl.signal,
       })
       // Read with a cap: refuse while reading, never after holding an unbounded answer in memory.
@@ -153,6 +206,8 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
       chunks.push(dec.decode())
       // /config and /config/providers carry API keys: rebuilt from an allowlist of fields before they leave (codeRelay.js).
       const out = projectResponse(m.m, m.p, r.status, chunks.join(''))
+      const gone = m.m === 'DELETE' && r.ok && /^\/session\/([^/]+)$/.exec(path)
+      if (gone) removeSessionAttachments(attachRoot, gone[1]) // a deleted session takes its saved files along
       await reply(out.st, out.b)
     } catch (e) {
       if (timedOut) return reply(504, { error: `OpenCode did not answer within ${Math.round(requestTimeoutMs / 1000)} s` })
@@ -162,6 +217,43 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
       clearTimeout(timer)
       inflight.delete(id)
     }
+  }
+
+  // The agent reads saved attachments outside the project; our sessions ask for that (external_directory). One rule per
+  // session allows reads in THAT session's folder and nowhere else — measured: PATCH /session/:id APPENDS it to a session
+  // that already exists; a same-prefix sibling folder, another session's folder and the root still ask.
+  const ruled = new Set()
+  /** The session as OpenCode has it, or null when it has no such session (or cannot say). */
+  async function sessionFor(sid, query) {
+    try {
+      const r = await fetchImpl(`${base}/session/${sid}${query ? '?' + query : ''}`, { headers: auth() })
+      if (!r.ok) return null
+      const s = await r.json().catch(() => null)
+      return s && typeof s === 'object' ? s : null
+    } catch { return null }
+  }
+  let prunedAt = Date.now()
+  function pruneDaily() {
+    if (Date.now() - prunedAt < 86_400_000) return
+    prunedAt = Date.now()
+    try { pruneAttachments(attachRoot) } catch { /* next time */ }
+  }
+  async function allowAttachmentReads(sid, query, s) {
+    if (ruled.has(sid)) return
+    if (await addRules(sid, query, s, [attachmentRule(attachRoot, sid)], 'attachment')) ruled.add(sid) // this session's folder only
+  }
+  const notesRuled = new Set()
+  /** Append the rules the session does not have yet (PATCH appends — measured). True when they are in place. */
+  async function addRules(sid, query, s, rules, what) {
+    const have = Array.isArray(s && s.permission) ? s.permission : []
+    const missing = rules.filter((rule) => !have.some((r) => r && r.permission === rule.permission && r.pattern === rule.pattern && r.action === rule.action))
+    if (!missing.length) return true
+    try {
+      const p = await fetchImpl(`${base}/session/${sid}${query ? '?' + query : ''}`, { method: 'PATCH', headers: { ...auth(), 'content-type': 'application/json' }, body: JSON.stringify({ permission: missing }) })
+      if (!p.ok) throw new Error(`PATCH answered ${p.status}`)
+      if (Array.isArray(s && s.permission)) s.permission.push(...missing)
+      return true
+    } catch (e) { log(`opencode-connector: ${name} · could not allow ${what} reads for ${sid} (${e && e.message}) — reading them will ask`); return false }
   }
 
   // One OpenCode stream per path, shared by every device watching it; each device (its client id `c`) renews its own
@@ -256,7 +348,12 @@ export async function main(argv = process.argv.slice(2)) {
   if (!pairings.length) { console.error('opencode-connector: not paired yet — run `bash tools/opencode-serve.sh --pair` and scan the QR with the Spaces app'); process.exit(1) }
   const c = await startConnector({ pairings })
   console.error(`opencode-connector: serving ${pairings.length} pairing${pairings.length === 1 ? '' : 's'} through the sealed relay (Ctrl-C to stop)`)
-  const bye = () => { c.stop(); process.exit(0) }
+  // Confidential models (tools/code-confidential.mjs): OpenCode's TrustedRouter calls come through here, so a model the
+  // catalog calls confidential really runs in the confidential pool, receipt-verified, and gets pictures through Tinfoil.
+  const proxyPort = proxyPortFor(pi >= 0 ? Number(args[pi + 1]) : 4096)
+  let proxy = null
+  try { proxy = await startConfidentialProxy({ port: proxyPort }); console.error(`opencode-connector: confidential models via 127.0.0.1:${proxy.port}`) } catch (e) { console.error(`opencode-connector: could not start the confidential-model proxy on 127.0.0.1:${proxyPort} (${(e && e.code) || (e && e.message)}) — TrustedRouter calls from OpenCode will fail until it can`) }
+  const bye = () => { c.stop(); if (proxy) proxy.close(); process.exit(0) }
   process.on('SIGINT', bye); process.on('SIGTERM', bye)
   const pp = args.indexOf('--parent')
   watchParent({ parent: pp >= 0 ? Number(args[pp + 1]) : 0, onGone: () => { console.error('opencode-connector: the script that started me is gone — stopping'); bye() } })

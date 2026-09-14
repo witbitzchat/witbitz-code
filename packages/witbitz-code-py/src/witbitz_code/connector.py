@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from . import _js
+from .attachments import (ATTACHMENT_ROUTE, MAX_FILE_BYTES, attachment_rule, default_root, prune_attachments,
+                          remove_session_attachments, serve_attachment, stage_message_body)
 from .auto_runner import AutoRunner
 from .pairings import DEFAULT_OPENCODE_URL, hostname, read_env_password
 from .relay import RELAY_URL, Connect, RelayPeer, allowed_event_path, allowed_request, project_response
@@ -136,8 +139,14 @@ class PairingServer:
 
     def __init__(self, pairing: dict, *, client: httpx.AsyncClient, flush_ms: float, log: Callable[[str], Any],
                  connect: Connect | None = None, request_timeout_ms: float = REQUEST_TIMEOUT_MS, max_senders: int = 64,
-                 max_response_bytes: int = MAX_RESPONSE, auto_dir: Path | None = None, auto_poll_ms: float = 1000) -> None:
+                 max_response_bytes: int = MAX_RESPONSE, auto_dir: Path | None = None, auto_poll_ms: float = 1000,
+                 attach_root: Path | None = None, attach_max_file_bytes: int = MAX_FILE_BYTES) -> None:
         self.pairing = pairing
+        # Attachments, the Claude Code way (docs/code-attachments.md): files a turn carries are saved here, per session.
+        self._attach_root = Path(attach_root) if attach_root else default_root()
+        self._attach_max = attach_max_file_bytes
+        self._ruled: set[str] = set()
+        self._pruned_at = time.time()
         self.name = pairing.get("name") if _js.truthy(pairing.get("name")) else hostname()
         self.base = re.sub(r"/+\Z", "", _js.js_string(pairing.get("opencodeUrl") or DEFAULT_OPENCODE_URL))
         self._client = client
@@ -235,7 +244,7 @@ class PairingServer:
             return None  # no hello before this socket has its nonce
         # caps: what this connector can do beyond the requests — a page shows the Auto switch only when `auto` is here.
         return self.peer.send({"t": "hello", "ver": VERSION, "name": self.name, "computerId": self.pairing.get("computerId") or "",
-                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto"], "auto": self.auto.sessions()})
+                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto", "attachments"], "auto": self.auto.sessions()})
 
     def _auth(self) -> dict:
         pw = self.pairing.get("password") or read_env_password(Path(self.pairing["envFile"]) if self.pairing.get("envFile") else None)
@@ -283,10 +292,41 @@ class PairingServer:
         if not current:
             await reply(409, {"error": "stale: this computer's connector changed — reconnecting"})
             return
+        p = m.get("p") if isinstance(m.get("p"), str) else ""
+        bare, _, query = p.partition("?")
+        # A saved attachment, for the page's chip (preview, download): answered HERE from the attachments folder, never forwarded.
+        if m.get("m") == "GET" and bare == ATTACHMENT_ROUTE:
+            q = dict(urllib.parse.parse_qsl(query))
+            st, b = serve_attachment(root=self._attach_root, session=q.get("session"), file=q.get("file"))
+            await reply(st, b)
+            return
         if not allowed_request(m.get("m"), m.get("p")):
             await reply(403, {"error": "not allowed by the connector"})
             return
         method, path, body = m["m"], m["p"], m.get("b")
+        # ATTACHMENTS: the files a turn carries are saved on this computer and the message names them.
+        turn_of = re.fullmatch(r"/session/([^/]+)/message", bare) if method == "POST" else None
+        if turn_of and isinstance(body, str) and '"file"' in body:
+            try:
+                parsed = _js.parse(body)
+            except Exception:  # OpenCode answers a malformed body itself
+                parsed = None
+            has_files = isinstance(parsed, dict) and isinstance(parsed.get("parts"), list) and any(
+                isinstance(x, dict) and x.get("type") == "file" and str(x.get("url") or "").startswith("data:") for x in parsed["parts"])
+            if has_files:
+                # Only for a session OpenCode has — an invented id must not get a folder (security review: disk filling).
+                known = await self._session_for(turn_of.group(1), query)
+                if known is None:
+                    await reply(404, {"error": "no such session on this computer"})
+                    return
+                self._prune_daily()
+                staged = stage_message_body(parsed, session_id=turn_of.group(1), root=self._attach_root, max_file_bytes=self._attach_max)
+                if staged and "error" in staged:
+                    await reply(staged["error"]["status"], {"error": staged["error"]["message"]})
+                    return
+                if staged:
+                    await self._allow_attachment_reads(turn_of.group(1), query, known)
+                    body = _js.stringify(staged["body"])
         ctrl = _Inflight()
         self._inflight[rid] = ctrl
         # A turn POST returns only when the model has finished; it has no timeout (its progress rides the event stream).
@@ -320,7 +360,48 @@ class PairingServer:
                 del self._inflight[rid]
         # /config and /config/providers carry API keys: rebuilt from an allowlist of fields before they leave (relay.py).
         status, text = project_response(method, path, status, text)
+        gone = re.fullmatch(r"/session/([^/]+)", bare) if method == "DELETE" and 200 <= status < 300 else None
+        if gone:
+            remove_session_attachments(self._attach_root, gone.group(1))  # a deleted session takes its saved files along
         await reply(status, text)
+
+    async def _session_for(self, sid: str, query: str) -> dict | None:
+        """The session as OpenCode has it, or None when it has no such session (or cannot say)."""
+        try:
+            r = await self._client.get(f"{self.base}/session/{sid}" + (f"?{query}" if query else ""), headers=self._auth())
+            if r.status_code >= 300:
+                return None
+            s = r.json()
+            return s if isinstance(s, dict) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _prune_daily(self) -> None:
+        if time.time() - self._pruned_at < 86400:
+            return
+        self._pruned_at = time.time()
+        try:
+            prune_attachments(self._attach_root)
+        except OSError:
+            pass
+
+    async def _allow_attachment_reads(self, sid: str, query: str, s: dict) -> None:
+        """One rule per session lets the agent read THAT session's folder (external_directory) — and nothing next to it.
+        Measured: PATCH /session/:id APPENDS the rule to a session that already exists."""
+        if sid in self._ruled:
+            return
+        rule = attachment_rule(self._attach_root, sid)
+        url = f"{self.base}/session/{sid}" + (f"?{query}" if query else "")
+        try:
+            perms = s.get("permission")
+            has = isinstance(perms, list) and any(isinstance(x, dict) and x.get("permission") == rule["permission"] and x.get("pattern") == rule["pattern"] and x.get("action") == "allow" for x in perms)
+            if not has:
+                p = await self._client.patch(url, headers={**self._auth(), "content-type": "application/json"}, content=_js.utf8(_js.stringify({"permission": [rule]})))
+                if p.status_code >= 300:
+                    raise RuntimeError(f"PATCH answered {p.status_code}")
+            self._ruled.add(sid)
+        except Exception as e:  # noqa: BLE001 — reading the files will ask; the turn still goes
+            self._log(f"opencode-connector: {self.name} · could not allow attachment reads for {sid} ({e}) — reading them will ask")
 
     async def _forward(self, method: Any, path: str, body: Any) -> tuple[int, str]:
         if not isinstance(method, str) or not _TOKEN.fullmatch(method):
@@ -448,14 +529,22 @@ def local_client() -> httpx.AsyncClient:
 async def start_connector(pairings: list[dict], *, flush_ms: float = 120, log: Callable[[str], Any] = _log_stderr,
                           client: httpx.AsyncClient | None = None, connect: Connect | None = None,
                           request_timeout_ms: float = REQUEST_TIMEOUT_MS, max_senders: int = 64,
-                          max_response_bytes: int = MAX_RESPONSE, auto_dir: Path | None = None, auto_poll_ms: float = 1000) -> Connector:
+                          max_response_bytes: int = MAX_RESPONSE, auto_dir: Path | None = None, auto_poll_ms: float = 1000,
+                          attach_root: Path | None = None, attach_max_file_bytes: int = MAX_FILE_BYTES) -> Connector:
     """Serve the given pairings until stop()/aclose(). Options exist for tests: flush_ms, log, client, connect,
     request_timeout_ms, max_senders, max_response_bytes, auto_dir, auto_poll_ms."""
     client = client or local_client()
+    try:
+        pruned = prune_attachments(Path(attach_root) if attach_root else default_root())
+        if pruned:
+            log(f"opencode-connector: removed {pruned} attachment folder(s) untouched for 30 days")
+    except OSError:
+        pass
     servers = []
     for p in pairings:
         s = PairingServer(p, client=client, flush_ms=flush_ms, log=log, connect=connect, request_timeout_ms=request_timeout_ms,
-                          max_senders=max_senders, max_response_bytes=max_response_bytes, auto_dir=auto_dir, auto_poll_ms=auto_poll_ms)
+                          max_senders=max_senders, max_response_bytes=max_response_bytes, auto_dir=auto_dir, auto_poll_ms=auto_poll_ms,
+                          attach_root=attach_root, attach_max_file_bytes=attach_max_file_bytes)
         await s.start()
         servers.append(s)
     return Connector(servers, client)

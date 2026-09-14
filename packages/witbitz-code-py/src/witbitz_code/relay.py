@@ -523,6 +523,7 @@ _ALLOW = [
         ("POST", f"/session/{_SEG}/message"),
         ("POST", f"/session/{_SEG}/abort"),
         ("POST", f"/session/{_SEG}/permissions/{_SEG}"),
+        ("POST", f"/permission/{_SEG}/reply"),  # the same answer with a message for the model (a person's Deny)
         ("PATCH", f"/session/{_SEG}"),
         ("DELETE", f"/session/{_SEG}"),
         # New session's folder picker: the computer's home, and folder listings under it (names, never contents)
@@ -539,6 +540,7 @@ _ALLOW = [
         ("POST", f"/session/{_SEG}/revert"),
         ("POST", f"/session/{_SEG}/unrevert"),
         ("POST", f"/session/{_SEG}/summarize"),
+        ("GET", "/session/status"),  # which sessions are running a turn, for the list (reads only)
     ]
 ]
 

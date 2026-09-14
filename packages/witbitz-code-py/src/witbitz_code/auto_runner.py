@@ -8,6 +8,11 @@ approval card. Each decision: one line in the local log (a digest, never the com
 connector sends it to open pages as `autoverdict`).
 
 The state file and the log are the JS connector's, byte for byte in shape: a computer can switch between the two.
+
+The JS runner's three rules from OpenCode's own code hold here too: a SUBAGENT's asks are decided under the nearest
+ancestor in Auto (reviewed against what the person asked there); a refusal is HELD until nothing else is pending in its
+session (OpenCode's reject cancels every other pending ask there); and starting a subagent is allowed without a review
+only when that agent's own rules ask for bash/edit/webfetch/websearch (policy.py).
 """
 
 from __future__ import annotations
@@ -26,11 +31,17 @@ import httpx
 
 from . import _js
 from .auto import action_for, classify_deterministic, log_record, parse_verdict, reviewer_prompt
+from .policy import SUBAGENT_GATED
 
 REVIEW_TITLE = "witbitz-auto-review"  # the page never lists a session with this title
 HANDLED_TTL_S = 30 * 60
 MAX_USER_MESSAGES = 6
 MAX_DETAIL = 300
+PARENT_TTL_MS = 10 * 60_000
+AGENTS_TTL_MS = 60_000
+MAX_DEPTH = 4  # parent links followed looking for the session in Auto
+REFUSAL_SUFFIX = "(Witbitz Auto mode refused this — try a narrower or safer step.)"
+_UNKNOWN = object()  # OpenCode could not say who a session's parent is (not cached)
 _SESSION_ID = re.compile(r"ses[A-Za-z0-9_-]{1,80}")
 
 
@@ -40,6 +51,15 @@ def _now_ms() -> int:
 
 def _uri_component(s: str) -> str:
     return quote(s, safe="-_.!~*'()")  # encodeURIComponent
+
+
+def action_of(rules: Any, perm: str) -> Any:
+    """OpenCode's own evaluation for the catch-all pattern: the LAST rule that matches wins."""
+    action = None
+    for r in rules if isinstance(rules, list) else []:
+        if isinstance(r, dict) and r.get("permission") in (perm, "*") and r.get("pattern") == "*":
+            action = r.get("action")
+    return action
 
 
 def detail_of(req: dict) -> str:
@@ -69,6 +89,9 @@ class AutoRunner:
         self._now = now
         self._auto: dict[str, dict] = {}  # sessionID → {dir, at}
         self._handled: dict[str, int] = {}  # permission id → when it was taken up (so a poll never reviews it twice)
+        self._parents: dict[str, dict] = {}  # sessionID → {parent, at} — so a subagent's ask finds its Auto session
+        self._agents: dict[str, dict] = {}  # directory → {list, at} — GET /agent, for what a subagent's own rules allow
+        self._held: dict[str, dict[str, dict]] = {}  # sessionID → {permission id → a refusal waiting for its session}
         self._tasks: set[asyncio.Task] = set()
         self._loop_task: asyncio.Task | None = None
         self._stopped = False
@@ -151,8 +174,71 @@ class AutoRunner:
                     user_messages.append(text)
         return model, user_messages[-MAX_USER_MESSAGES:]
 
-    async def _review(self, req: dict, directory: str) -> tuple[dict | None, str, str]:
-        model, user_messages = await self._session_context(req["sessionID"], directory)
+    async def _parent_of(self, sid: str, directory: str) -> Any:
+        c = self._parents.get(sid)
+        if c and self._now() - c["at"] < PARENT_TTL_MS:
+            return c["parent"]
+        try:
+            ok, _, data = await self._call("GET", f"/session/{_uri_component(sid)}", directory)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return _UNKNOWN
+        if not ok or not isinstance(data, dict):
+            return _UNKNOWN
+        parent = data["parentID"] if isinstance(data.get("parentID"), str) and data["parentID"] else None
+        self._parents[sid] = {"parent": parent, "at": self._now()}
+        return parent
+
+    async def _owner_of(self, sid: str, directory: str) -> str | None:
+        """The session in Auto this ask belongs to: its own, or its nearest ancestor's in the same project."""
+        cur: Any = sid
+        for _ in range(MAX_DEPTH):
+            if not isinstance(cur, str) or not cur:
+                return None
+            on = self._auto.get(cur)
+            if on and on["dir"] == directory:
+                return cur
+            cur = await self._parent_of(cur, directory)
+        return None
+
+    async def _subagent_asks(self, name: str, directory: str) -> bool | None:
+        c = self._agents.get(directory)
+        if not c or self._now() - c["at"] > AGENTS_TTL_MS:
+            try:
+                ok, _, data = await self._call("GET", "/agent", directory)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return None
+            if not ok or not isinstance(data, list):
+                return None
+            c = {"list": data, "at": self._now()}
+            self._agents[directory] = c
+        agent = next((a for a in c["list"] if isinstance(a, dict) and a.get("name") == name), None)
+        if not agent or not isinstance(agent.get("permission"), list):
+            return False
+        return all(action_of(agent["permission"], p) in ("ask", "deny") for p in SUBAGENT_GATED)
+
+    async def _classify_subagent(self, req: dict, directory: str) -> dict | None:
+        if req.get("permission") != "task":
+            return None
+        md = req.get("metadata") if isinstance(req.get("metadata"), dict) else {}
+        patterns = req.get("patterns") if isinstance(req.get("patterns"), list) else []
+        name = md.get("subagent_type") or (patterns[0] if patterns else "")
+        if not isinstance(name, str) or not name:
+            return None
+        asks = await self._subagent_asks(name, directory)
+        if asks is True:
+            return {"stage": "fast-allow", "decision": "allow", "rule": "fast:subagent-asks",
+                    "reason": f"starts the {name} agent, whose own commands each ask for approval"}
+        if asks is False:
+            return {"stage": "fast-ask", "decision": "ask", "rule": "ask:subagent-unguarded",
+                    "reason": f"the {name} agent's own commands would run without asking — start it yourself if you trust it"}
+        return None
+
+    async def _review(self, req: dict, directory: str, owner: str | None = None) -> tuple[dict | None, str, str]:
+        model, user_messages = await self._session_context(owner or req["sessionID"], directory)
         if not model:
             return None, "", "the session has no model to review with yet"
         label = f"{_js.js_string(model['providerID'])}/{_js.js_string(model['modelID'])}"
@@ -192,32 +278,63 @@ class AutoRunner:
             except Exception:
                 pass
 
-    async def _decide(self, req: dict, directory: str) -> None:
-        t0 = self._now()
-        det = classify_deterministic(req, directory=directory, home=self._home)
-        model, note = "", ""
-        if det:
-            stage = det["stage"]
-            verdict = {"decision": det["decision"], "severity": 100 if stage == "hard-deny" else 0, "rule": det["rule"], "reason": det["reason"]}
-        else:
-            stage = "reviewer"
-            verdict, model, note = await self._review(req, directory)
-        action = det["decision"] if det else action_for(verdict)
-        answered = None
-        reason_given = (verdict or {}).get("reason") or ""
-        if action == "allow":
-            answered = await self._reply(req, directory, "once")
-        elif action == "deny":
-            answered = await self._reply(req, directory, "reject",
-                                         f"{reason_given or 'Refused by Auto mode.'} (Witbitz Auto mode refused this — try a narrower or safer step.)")
-        rec = log_record(req=req, stage=stage, verdict=verdict, action=action, model=model, ms=self._now() - t0, at=t0)
-        self._append_log({**rec, "answered": False} if answered is False else rec)
+    def _emit(self, req: dict, stage: str, action: str, rec: dict, reason: str, answered: Any) -> None:
         try:
             self._on_verdict({"id": req["id"], "sessionID": req.get("sessionID"), "permission": req.get("permission"), "detail": detail_of(req),
                               "stage": stage, "action": action, "severity": rec["severity"], "rule": rec["rule"],
-                              "reason": reason_given or note or "", "answered": answered})
+                              "reason": reason, "answered": answered})
         except Exception:
             pass  # a listener never breaks the loop
+
+    async def _decide(self, req: dict, directory: str, owner: str | None = None) -> None:
+        t0 = self._now()
+        det = classify_deterministic(req, directory=directory, home=self._home) or await self._classify_subagent(req, directory)
+        model, note = "", ""
+        if det:
+            stage = det["stage"]
+            severity = 100 if stage == "hard-deny" else 50 if stage == "fast-ask" else 0
+            verdict = {"decision": det["decision"], "severity": severity, "rule": det["rule"], "reason": det["reason"]}
+        else:
+            stage = "reviewer"
+            verdict, model, note = await self._review(req, directory, owner)
+        action = det["decision"] if det else action_for(verdict)
+        reason_given = (verdict or {}).get("reason") or ""
+        rec = log_record(req=req, stage=stage, verdict=verdict, action=action, model=model, ms=self._now() - t0, at=t0)
+        reason = reason_given or note or ""
+        if action == "deny":
+            # HELD, not sent (see the module docstring). The page hears it now (answered None) and again when it lands.
+            self._held.setdefault(req["sessionID"], {})[req["id"]] = {
+                "req": req, "dir": directory, "stage": stage, "rec": rec, "reason": reason,
+                "message": f"{reason_given or 'Refused by Auto mode.'} {REFUSAL_SUFFIX}"}
+            self._emit(req, stage, action, rec, reason, None)
+            return
+        answered = await self._reply(req, directory, "once") if action == "allow" else None
+        self._append_log({**rec, "answered": False} if answered is False else rec)
+        self._emit(req, stage, action, rec, reason, answered)
+
+    async def _release_held(self, directory: str, pending: list) -> None:
+        """Send the held refusals of every session whose OTHER asks have all settled."""
+        for sid in list(self._held):
+            refusals = self._held.get(sid) or {}
+            mine = [h for h in refusals.values() if h["dir"] == directory]
+            if not mine:
+                continue
+            pending_ids = {p.get("id") for p in pending if isinstance(p, dict) and p.get("sessionID") == sid}
+            for h in mine:
+                if h["req"]["id"] in pending_ids:
+                    continue
+                refusals.pop(h["req"]["id"], None)  # answered elsewhere before it could be sent
+                self._append_log({**h["rec"], "answered": False})
+                self._emit(h["req"], h["stage"], "deny", h["rec"], h["reason"], False)
+            if any(pid not in refusals for pid in pending_ids):
+                continue  # something else in the session is still open
+            for h in [x for x in list(refusals.values()) if x["dir"] == directory]:
+                refusals.pop(h["req"]["id"], None)
+                answered = await self._reply(h["req"], directory, "reject", h["message"])
+                self._append_log({**h["rec"], "answered": False} if answered is False else h["rec"])
+                self._emit(h["req"], h["stage"], "deny", h["rec"], h["reason"], answered)
+            if not refusals:
+                self._held.pop(sid, None)
 
     # ── the loop ──────────────────────────────────────────────────────────────────────────────────────────────────────
     async def _poll(self) -> None:
@@ -234,19 +351,23 @@ class AutoRunner:
                 raise
             except Exception:
                 continue  # OpenCode restarting
-            for req in data if isinstance(data, list) else []:
+            pending = data if isinstance(data, list) else []
+            for req in pending:
                 if not isinstance(req, dict) or not isinstance(req.get("id"), str) or req["id"] in self._handled:
                     continue
                 sid = req.get("sessionID")
-                on = self._auto.get(sid) if isinstance(sid, str) else None
-                if not on or on["dir"] != directory:
+                if not isinstance(sid, str):
+                    continue
+                owner = await self._owner_of(sid, directory)
+                if not owner:
                     continue
                 self._handled[req["id"]] = self._now()
-                self._spawn(self._decide_logged(req, directory))
+                self._spawn(self._decide_logged(req, directory, owner))
+            await self._release_held(directory, pending)
 
-    async def _decide_logged(self, req: dict, directory: str) -> None:
+    async def _decide_logged(self, req: dict, directory: str, owner: str | None = None) -> None:
         try:
-            await self._decide(req, directory)
+            await self._decide(req, directory, owner)
         except asyncio.CancelledError:
             raise
         except Exception as e:
