@@ -7785,6 +7785,7 @@ var init_dist2 = __esm({
 
 // tools/witbitz-code.mjs
 import { spawn, spawnSync as spawnSync2 } from "node:child_process";
+import { connect as netConnect } from "node:net";
 
 // tools/opencode-pair.mjs
 import { readFileSync, writeFileSync as writeFileSync2, chmodSync as chmodSync2, existsSync, mkdtempSync, mkdirSync, rmSync, renameSync as renameSync2 } from "node:fs";
@@ -15270,14 +15271,34 @@ async function runSetup(d) {
     result.running = "service";
   } else {
     while (await d.isListening(port)) {
-      io.say(`   Something is already running on 127.0.0.1:${port} \u2014 most likely an OpenCode you started yourself.`);
-      io.say("   Close it (and any opencode window attached to it). Started that way, its TrustedRouter calls are not protected.");
-      io.say(`   If it belongs to someone else on this computer, use another port instead: node witbitz-code.mjs setup --port ${port + 1}`);
-      const a = await io.ask("   Press Enter when it is closed, or type s to stop here: ");
-      if (/^s/i.test(a)) {
-        io.say(`   Stopped. When it is closed, run setup again.`);
+      const mine2 = await d.portOwners(port);
+      if (mine2.length) {
+        io.say(`   Already running on 127.0.0.1:${port}: ${mine2.map((p) => `${(p.cmd || "a program").slice(0, 70)} (process ${p.pid})`).join("; ")}.`);
+        io.say("   witbitz-code has to start OpenCode itself \u2014 started any other way, its TrustedRouter calls are not protected.");
+        const a = await io.ask(`   Stop ${mine2.length > 1 ? "them" : "it"} now? [Y/n] \u2014 or type s to stop here: `);
+        if (/^s/i.test(a)) {
+          io.say("   Stopped. Run setup again when you are ready.");
+          return { ...result, stopped: "busy" };
+        }
+        if (/^n/i.test(a)) {
+          if (/^s/i.test(await io.ask("   Close it yourself, then press Enter \u2014 or type s to stop here: "))) {
+            io.say("   Stopped. Run setup again when you are ready.");
+            return { ...result, stopped: "busy" };
+          }
+          continue;
+        }
+        for (const p of mine2) io.say(await d.stopProcess(p.pid) ? `   \u2713 Stopped process ${p.pid}` : `   \u2716 Could not stop process ${p.pid}`);
+        continue;
+      }
+      const free = await d.freePort(port + 1);
+      io.say(`   Port ${port} is taken by a program that is not yours${d.wsl ? " \u2014 on WSL, another Linux distro on this computer shares its ports" : ""}.`);
+      if (!yes(await io.ask(`   Use port ${free} instead? [Y/n] `))) {
+        io.say(`   Stopped. To use another port later: node witbitz-code.mjs setup --port ${free}`);
         return { ...result, stopped: "busy" };
       }
+      for (const p of on(d.allPairings(), port)) d.movePairing(p, free);
+      port = free;
+      io.say(`   \u2713 This computer now uses OpenCode on port ${port} (no new scan needed)`);
     }
     if (svc.available() && d.bundled) {
       if (yes(await io.ask("   Start witbitz-code now and every time you log in? [Y/n] "))) {
@@ -15508,13 +15529,17 @@ var flag = (args, name, dflt = "") => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] || "" : dflt;
 };
-async function isListening(port) {
-  try {
-    await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1500) });
-    return true;
-  } catch {
-    return false;
-  }
+function isListening(port) {
+  return new Promise((resolve5) => {
+    const sock = netConnect({ host: "127.0.0.1", port });
+    const done = (v) => {
+      sock.destroy();
+      resolve5(v);
+    };
+    sock.setTimeout(1500, () => done(false));
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+  });
 }
 function hasTrustedRouter(env = process.env) {
   if (env.TRUSTEDROUTER_API_KEY) return true;
@@ -15655,6 +15680,19 @@ async function setup(args) {
     saveTinfoilKey,
     checkTinfoil: (k) => checkTinfoilKey(k),
     isListening: (p) => isListening(p),
+    portOwners: (p) => portOwners(p),
+    wsl: (() => {
+      try {
+        return /microsoft/i.test(readFileSync8("/proc/version", "utf8"));
+      } catch {
+        return false;
+      }
+    })(),
+    stopProcess,
+    freePort: async (from) => {
+      for (let p = Math.max(from, 1024); p + 100 < 65536; p++) if (!await isListening(p) && !await isListening(p + 100)) return p;
+      return from;
+    },
     service: serviceManager(),
     // read at step 5 — after step 1 may have put OpenCode's own bin folder on PATH
     get serviceArgs() {
@@ -15663,6 +15701,85 @@ async function setup(args) {
     bundled: true,
     serveHere: (p) => serve(["--port", String(p)])
   });
+}
+async function stopProcess(pid) {
+  const gone = () => {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    try {
+      return /^\d+ \(.*\) Z/.test(readFileSync8(`/proc/${pid}/stat`, "utf8"));
+    } catch {
+      return false;
+    }
+  };
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return gone();
+  }
+  for (let i = 0; i < 50; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    if (gone()) return true;
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  return gone();
+}
+function portOwners(port) {
+  const hits = [];
+  if (existsSync8("/proc/net/tcp")) {
+    const inodes = /* @__PURE__ */ new Set();
+    for (const f of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+      let text = "";
+      try {
+        text = readFileSync8(f, "utf8");
+      } catch {
+        continue;
+      }
+      for (const line of text.split("\n").slice(1)) {
+        const c = line.trim().split(/\s+/);
+        if (c.length >= 10 && c[3] === "0A" && parseInt(c[1].split(":").pop(), 16) === port) inodes.add(c[9]);
+      }
+    }
+    if (!inodes.size) return hits;
+    for (const p of readdirSync3("/proc")) {
+      if (!/^\d+$/.test(p) || Number(p) === process.pid) continue;
+      let fds;
+      try {
+        fds = readdirSync3(`/proc/${p}/fd`);
+      } catch {
+        continue;
+      }
+      const owns = fds.some((f) => {
+        try {
+          const m = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/${p}/fd/${f}`));
+          return !!m && inodes.has(m[1]);
+        } catch {
+          return false;
+        }
+      });
+      if (!owns) continue;
+      let cmd2 = "";
+      try {
+        cmd2 = readFileSync8(`/proc/${p}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
+      } catch {
+      }
+      hits.push({ pid: Number(p), cmd: cmd2 });
+    }
+    return hits;
+  }
+  const r = spawnSync2("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], { encoding: "utf8" });
+  for (const pid of new Set(String(r.stdout || "").split(/\s+/).filter(Boolean).map(Number))) {
+    if (!pid || pid === process.pid) continue;
+    hits.push({ pid, cmd: String(spawnSync2("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout || "").trim() });
+  }
+  return hits;
 }
 function openCodeHolders(dir) {
   const hits = [];
@@ -15824,35 +15941,7 @@ async function uninstall(args) {
     openCode: openCodeHere,
     removeOpenCode: args.includes("--remove-opencode"),
     removeOpenCodeProgram,
-    stopProcess: async (pid) => {
-      const gone = () => {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          return true;
-        }
-        try {
-          return /^\d+ \(.*\) Z/.test(readFileSync8(`/proc/${pid}/stat`, "utf8"));
-        } catch {
-          return false;
-        }
-      };
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        return gone();
-      }
-      for (let i = 0; i < 50; i++) {
-        await new Promise((r2) => setTimeout(r2, 100));
-        if (gone()) return true;
-      }
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-      }
-      await new Promise((r2) => setTimeout(r2, 300));
-      return gone();
-    }
+    stopProcess
   });
   if (r.done) try {
     rmdirSync(join8(homedir9(), ".witbitz"));

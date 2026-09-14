@@ -152,7 +152,11 @@ function fakeSetup(over = {}) {
     tinfoilKey: () => state.tinfoil,
     saveTinfoilKey: (k) => { state.tinfoil = k },
     checkTinfoil: async () => ({ ok: true }),
-    isListening: async (port) => { state.checkedPort = port; return typeof state.listening === 'function' ? state.listening() : state.listening },
+    isListening: async (port) => { state.checkedPort = port; return typeof state.listening === 'function' ? state.listening(port) : state.listening },
+    portOwners: async () => (typeof over.owners === 'function' ? over.owners() : over.owners ?? []),
+    stopProcess: async (pid) => { (state.stopped ||= []).push(pid); return true },
+    freePort: async (from) => over.free ?? from,
+    wsl: over.wsl ?? true,
     service: {
       kind: 'systemd', available: () => over.serviceAvailable !== false, unavailableWhy: 'no systemd user session',
       status: () => state.service, outdated: () => !!over.outdated,
@@ -205,17 +209,21 @@ test('a newly added TrustedRouter key restarts the running service; a newer down
   assert.match(newer.text(), /Updated the background service to this version/)
 })
 
-test('an OpenCode the person started themselves is named, and setup waits for it to close', async () => {
-  let checks = 0
-  const f = fakeSetup({ answers: ['', ''], state: { opencode: true, pairings: [{ name: 'l' }], tr: true, tinfoil: 'tk', listening: () => ++checks < 2 } })
+test('an OpenCode of the person\'s own on the port: setup names it and offers to stop it, then carries on', async () => {
+  const SERVE = { pid: 777, cmd: 'opencode serve --port 4096' }
+  const f = fakeSetup({ answers: ['', ''], owners: () => (f.state.stopped ? [] : [SERVE]), state: { opencode: true, pairings: [{ name: 'l' }], tr: true, tinfoil: 'tk', listening: () => !f.state.stopped } })
   await runSetup(f.d)
-  assert.match(f.text(), /Something is already running on 127\.0\.0\.1:4096/)
+  assert.match(f.text(), /Already running on 127\.0\.0\.1:4096: opencode serve --port 4096 \(process 777\)/)
   assert.match(f.text(), /its TrustedRouter calls are not protected/)
+  assert.match(f.text(), /Stop it now\? \[Y\/n\] — or type s to stop here/)
+  assert.deepEqual(f.state.stopped, [777])
   assert.equal(f.state.installs.length, 1)
-  const stop = fakeSetup({ answers: ['s'], state: { opencode: true, pairings: [{ name: 'l' }], tr: true, tinfoil: 'tk', listening: true } })
+  assert.equal(f.state.installs[0].port, 4096)
+  const stop = fakeSetup({ answers: ['s'], owners: [SERVE], state: { opencode: true, pairings: [{ name: 'l' }], tr: true, tinfoil: 'tk', listening: true } })
   const r = await runSetup(stop.d)
   assert.equal(r.stopped, 'busy')
   assert.equal(stop.state.installs.length, 0)
+  assert.equal(stop.state.stopped, undefined)
 })
 
 test('no background start (WSL without systemd, or "n"): it runs in this window instead', async () => {
@@ -317,10 +325,20 @@ test('plain setup on a computer paired for 4097 uses 4097 — no QR, and the ser
   assert.match(two.text(), /ports 4097, 4098\. Run setup for the one you mean/)
 })
 
-test('an OpenCode that is someone else\'s: the busy-port message offers another port', async () => {
-  const f = fakeSetup({ answers: ['s'], state: { opencode: true, pairings: [PAIRED_4096], tr: true, tinfoil: 'tk', listening: true } })
-  await runSetup(f.d)
-  assert.match(f.text(), /If it belongs to someone else on this computer, use another port instead: node witbitz-code\.mjs setup --port 4097/)
+test("the owner's test: 4096 is taken by a program that is not theirs (another WSL distro) — setup moves to a free port and continues", async () => {
+  const f = fakeSetup({ answers: ['', ''], free: 4098, state: { opencode: true, pairings: [PAIRED_4096], tr: true, tinfoil: 'tk', listening: (p) => p === 4096 } })
+  const r = await runSetup(f.d)
+  assert.equal(r.stopped, undefined)
+  assert.match(f.text(), /Port 4096 is taken by a program that is not yours — on WSL, another Linux distro on this computer shares its ports/)
+  assert.match(f.text(), /Use port 4098 instead\? \[Y\/n\]/)
+  assert.equal(f.state.moved, 4098, 'the pairing moves — no new scan')
+  assert.equal(f.state.installs[0].port, 4098)
+  assert.equal(f.state.stopped, undefined, 'nothing of anyone else is stopped')
+  const no = fakeSetup({ answers: ['n'], free: 4098, wsl: false, state: { opencode: true, pairings: [PAIRED_4096], tr: true, tinfoil: 'tk', listening: (p) => p === 4096 } })
+  const noText = () => no.text()
+  assert.equal((await runSetup(no.d)).stopped, 'busy')
+  assert.match(no.text(), /To use another port later: node witbitz-code\.mjs setup --port 4098/)
+  assert.doesNotMatch(noText(), /WSL/, 'the WSL reason only on WSL')
 })
 
 test('a pairing is moved by account room and computer, pointed at 127.0.0.1; ports read like the connector reads them', () => {

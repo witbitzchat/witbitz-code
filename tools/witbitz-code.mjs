@@ -14,6 +14,7 @@
 //   node witbitz-code.mjs service install|uninstall|status [--port 4096]   start with the computer (systemd / launchd)
 //   node witbitz-code.mjs uninstall [--yes] [--remove-keys|notes|sessions]   remove witbitz-code (keeps OpenCode)
 import { spawn, spawnSync } from 'node:child_process'
+import { connect as netConnect } from 'node:net'
 import { main as pairMain, envSet, writeSecret, unpairEntry } from './opencode-pair.mjs'
 import { startConnector, loadPairings, parseEnvPassword, pairingsForPort, PAIRINGS_PATH } from './opencode-connector.mjs'
 import { startConfidentialProxy, proxyPortFor, proxyConfig, tinfoilKey } from './code-confidential.mjs'
@@ -53,8 +54,16 @@ Nothing listens on the network: OpenCode stays on 127.0.0.1 and the connector di
 
 const flag = (args, name, dflt = '') => { const i = args.indexOf(name); return i >= 0 ? (args[i + 1] || '') : dflt }
 
-async function isListening(port) {
-  try { await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1500) }); return true } catch { return false }
+/** Is anything accepting TCP connections on 127.0.0.1:port? A plain connect, not an HTTP request: a listener that does not
+ *  speak HTTP (measured: sshd on 22) made the fetch throw, looked free, and OpenCode then failed to bind (ServeError). */
+function isListening(port) {
+  return new Promise((resolve) => {
+    const sock = netConnect({ host: '127.0.0.1', port })
+    const done = (v) => { sock.destroy(); resolve(v) }
+    sock.setTimeout(1500, () => done(false))
+    sock.once('connect', () => done(true))
+    sock.once('error', () => done(false))
+  })
 }
 
 export { pairingsForPort } // re-exported for the test; one OpenCode per port, one connector per OpenCode
@@ -182,12 +191,66 @@ async function setup(args) {
     saveTinfoilKey,
     checkTinfoil: (k) => checkTinfoilKey(k),
     isListening: (p) => isListening(p),
+    portOwners: (p) => portOwners(p),
+    wsl: (() => { try { return /microsoft/i.test(readFileSync('/proc/version', 'utf8')) } catch { return false } })(),
+    stopProcess,
+    freePort: async (from) => {
+      for (let p = Math.max(from, 1024); p + 100 < 65536; p++) if (!(await isListening(p)) && !(await isListening(p + 100))) return p
+      return from
+    },
     service: serviceManager(),
     // read at step 5 — after step 1 may have put OpenCode's own bin folder on PATH
     get serviceArgs() { return { node: process.execPath, script: fileURLToPath(import.meta.url), path: process.env.PATH || '' } },
     bundled: process.env.WITBITZ_CODE_BUNDLED === '1',
     serveHere: (p) => serve(['--port', String(p)]),
   })
+}
+
+/** Stop a process: SIGTERM, up to 5 s, then SIGKILL. Gone = no such process, or a zombie (exited, not yet reaped by its
+ *  parent — measured: kill(pid, 0) still succeeds on one). */
+async function stopProcess(pid) {
+  const gone = () => { try { process.kill(pid, 0) } catch { return true } try { return /^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8')) } catch { return false } }
+  try { process.kill(pid, 'SIGTERM') } catch { return gone() }
+  for (let i = 0; i < 50; i++) { await new Promise((r) => setTimeout(r, 100)); if (gone()) return true }
+  try { process.kill(pid, 'SIGKILL') } catch { /* gone meanwhile */ }
+  await new Promise((r) => setTimeout(r, 300))
+  return gone()
+}
+
+/** This user's processes LISTENING on a TCP port. Linux: the LISTEN sockets in /proc/net/tcp{,6} for that port, then the
+ *  processes whose fds point at those socket inodes (measured: 4096 → `opencode serve`; system listeners on 22/53 and
+ *  another WSL distro's show no owner — they are not this person's). macOS: lsof. */
+function portOwners(port) {
+  const hits = []
+  if (existsSync('/proc/net/tcp')) {
+    const inodes = new Set()
+    for (const f of ['/proc/net/tcp', '/proc/net/tcp6']) {
+      let text = ''
+      try { text = readFileSync(f, 'utf8') } catch { continue }
+      for (const line of text.split('\n').slice(1)) {
+        const c = line.trim().split(/\s+/)
+        if (c.length >= 10 && c[3] === '0A' && parseInt(c[1].split(':').pop(), 16) === port) inodes.add(c[9])
+      }
+    }
+    if (!inodes.size) return hits
+    for (const p of readdirSync('/proc')) {
+      if (!/^\d+$/.test(p) || Number(p) === process.pid) continue
+      let fds
+      try { fds = readdirSync(`/proc/${p}/fd`) } catch { continue }
+      const owns = fds.some((f) => { try { const m = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/${p}/fd/${f}`)); return !!m && inodes.has(m[1]) } catch { return false } })
+      if (!owns) continue
+      let cmd = ''
+      try { cmd = readFileSync(`/proc/${p}/cmdline`, 'utf8').split('\0').filter(Boolean).join(' ') } catch { /* gone */ }
+      hits.push({ pid: Number(p), cmd })
+    }
+    return hits
+  }
+  const r = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' })
+  for (const pid of new Set(String(r.stdout || '').split(/\s+/).filter(Boolean).map(Number))) {
+    if (!pid || pid === process.pid) continue
+    hits.push({ pid, cmd: String(spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout || '').trim() })
+  }
+  return hits
 }
 
 /** This user's processes that have OpenCode's data folder open — the only ones deleting the sessions would pull files out
@@ -309,15 +372,7 @@ async function uninstall(args) {
     openCode: openCodeHere,
     removeOpenCode: args.includes('--remove-opencode'),
     removeOpenCodeProgram,
-    stopProcess: async (pid) => {
-      // gone = no such process, or a zombie (exited, not yet reaped by its parent — measured: kill(pid, 0) still succeeds)
-      const gone = () => { try { process.kill(pid, 0) } catch { return true } try { return /^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8')) } catch { return false } }
-      try { process.kill(pid, 'SIGTERM') } catch { return gone() }
-      for (let i = 0; i < 50; i++) { await new Promise((r) => setTimeout(r, 100)); if (gone()) return true }
-      try { process.kill(pid, 'SIGKILL') } catch { /* gone meanwhile */ }
-      await new Promise((r) => setTimeout(r, 300))
-      return gone()
-    },
+    stopProcess,
   })
   if (r.done) try { rmdirSync(join(homedir(), '.witbitz')) } catch { /* not empty: something else of the person's lives there */ }
   // a pairings file kept somewhere else (WITBITZ_CODE_PAIRINGS) goes too once every account let go of this computer

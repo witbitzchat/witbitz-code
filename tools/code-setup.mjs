@@ -309,7 +309,9 @@ async function askKey({ io, label, check }) {
  *   openCodeInstallPlans() → [{ kind: 'npm'|'installer', label }] (what works here, best first) · installOpenCode(kind) → boolean
  *   allPairings() → [] · portOf(pairing) → number · pair(port) · movePairing(pairing, port) · hasTrustedRouter()
  *   saveTrustedRouterKey(key) · tinfoilKey() · saveTinfoilKey(key) · checkTrustedRouter(key) · checkTinfoil(key)
- *   isListening(port) · service (serviceManager()) · serviceArgs { node, script, path } · bundled · serveHere(port)
+ *   isListening(port) · portOwners(port) → [{ pid, cmd }] (this user's processes listening there) · stopProcess(pid)
+ *   freePort(from) → port (it and port+100, the confidential-model proxy, both free) · service (serviceManager())
+ *   serviceArgs { node, script, path } · bundled · serveHere(port) · wsl (running under Windows' WSL)
  */
 export async function runSetup(d) {
   const { io } = d
@@ -420,12 +422,28 @@ export async function runSetup(d) {
     else io.say('   ✓ Already running in the background')
     result.running = 'service'
   } else {
+    // Who holds the port decides what to offer (the owner's test: 4096 was an OpenCode in ANOTHER WSL distro — distros share
+    // ports — so "close it" was impossible). This person's own process: offer to stop it. Anything else: move to a free port.
     while (await d.isListening(port)) {
-      io.say(`   Something is already running on 127.0.0.1:${port} — most likely an OpenCode you started yourself.`)
-      io.say('   Close it (and any opencode window attached to it). Started that way, its TrustedRouter calls are not protected.')
-      io.say(`   If it belongs to someone else on this computer, use another port instead: node witbitz-code.mjs setup --port ${port + 1}`)
-      const a = await io.ask('   Press Enter when it is closed, or type s to stop here: ')
-      if (/^s/i.test(a)) { io.say(`   Stopped. When it is closed, run setup again.`); return { ...result, stopped: 'busy' } }
+      const mine = await d.portOwners(port)
+      if (mine.length) {
+        io.say(`   Already running on 127.0.0.1:${port}: ${mine.map((p) => `${(p.cmd || 'a program').slice(0, 70)} (process ${p.pid})`).join('; ')}.`)
+        io.say('   witbitz-code has to start OpenCode itself — started any other way, its TrustedRouter calls are not protected.')
+        const a = await io.ask(`   Stop ${mine.length > 1 ? 'them' : 'it'} now? [Y/n] — or type s to stop here: `)
+        if (/^s/i.test(a)) { io.say('   Stopped. Run setup again when you are ready.'); return { ...result, stopped: 'busy' } }
+        if (/^n/i.test(a)) {
+          if (/^s/i.test(await io.ask('   Close it yourself, then press Enter — or type s to stop here: '))) { io.say('   Stopped. Run setup again when you are ready.'); return { ...result, stopped: 'busy' } }
+          continue
+        }
+        for (const p of mine) io.say((await d.stopProcess(p.pid)) ? `   ✓ Stopped process ${p.pid}` : `   ✖ Could not stop process ${p.pid}`)
+        continue
+      }
+      const free = await d.freePort(port + 1)
+      io.say(`   Port ${port} is taken by a program that is not yours${d.wsl ? ' — on WSL, another Linux distro on this computer shares its ports' : ''}.`)
+      if (!yes(await io.ask(`   Use port ${free} instead? [Y/n] `))) { io.say(`   Stopped. To use another port later: node witbitz-code.mjs setup --port ${free}`); return { ...result, stopped: 'busy' } }
+      for (const p of on(d.allPairings(), port)) d.movePairing(p, free)
+      port = free
+      io.say(`   ✓ This computer now uses OpenCode on port ${port} (no new scan needed)`)
     }
     if (svc.available() && d.bundled) {
       if (yes(await io.ask('   Start witbitz-code now and every time you log in? [Y/n] '))) {
