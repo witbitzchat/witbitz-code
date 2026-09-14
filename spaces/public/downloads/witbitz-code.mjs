@@ -15180,13 +15180,16 @@ async function runSetup(d) {
   let oc = d.findOpenCode();
   if (!oc) {
     io.say("   OpenCode is not installed.");
-    if (yes(await io.ask('   Install it now with "npm install -g opencode-ai"? [Y/n] '))) {
-      if (d.installOpenCode()) oc = d.findOpenCode();
+    for (const plan of d.openCodeInstallPlans()) {
+      if (!yes(await io.ask(`   Install it now ${plan.label}? [Y/n] `))) break;
+      if (d.installOpenCode(plan.kind)) oc = d.findOpenCode();
+      if (oc) break;
+      io.say("   \u2716 That did not install OpenCode.");
     }
     if (!oc) {
-      io.say("   \u2716 OpenCode is still not installed. Install it one of these ways, then run setup again:");
-      io.say("       npm install -g opencode-ai");
-      io.say("       curl -fsSL https://opencode.ai/install | bash      (then open a new terminal)");
+      io.say("   \u2716 OpenCode is still not installed. Install it, then run setup again:");
+      io.say("       curl -fsSL https://opencode.ai/install | bash      (no sudo \u2014 then open a new terminal)");
+      io.say("       npm install -g opencode-ai                         (if your npm can install without sudo)");
       return { ...result, stopped: "opencode" };
     }
   }
@@ -15636,7 +15639,8 @@ async function setup(args) {
     io: { say, ask: (q) => readLine(q), secret: (q) => readLine(q, { hidden: true }) },
     port,
     findOpenCode,
-    installOpenCode: () => spawnSync2("npm", ["install", "-g", "opencode-ai"], { stdio: "inherit" }).status === 0,
+    openCodeInstallPlans,
+    installOpenCode: (kind) => kind === "npm" ? spawnSync2("npm", ["install", "-g", "opencode-ai"], { stdio: "inherit" }).status === 0 : spawnSync2("bash", ["-c", "curl -fsSL https://opencode.ai/install | bash"], { stdio: "inherit" }).status === 0,
     portExplicit: args.includes("--port"),
     allPairings: () => loadPairings(void 0, () => {
     }),
@@ -15697,6 +15701,24 @@ function openCodeHolders(dir) {
     hits.push({ pid, cmd: String(spawnSync2("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout || "").trim() });
   }
   return hits;
+}
+function openCodeInstallPlans() {
+  const has = (cmd2) => spawnSync2(process.platform === "win32" ? "where" : "which", [cmd2], { encoding: "utf8" }).status === 0;
+  const plans = [];
+  if (has("npm")) {
+    const root = String(spawnSync2("npm", ["root", "-g"], { encoding: "utf8" }).stdout || "").trim();
+    let writable = false;
+    try {
+      if (root) {
+        accessSync(existsSync8(root) ? root : dirname4(root), fsConstants.W_OK);
+        writable = true;
+      }
+    } catch {
+    }
+    if (writable) plans.push({ kind: "npm", label: 'with npm ("npm install -g opencode-ai")' });
+  }
+  if (has("curl") && has("bash")) plans.push({ kind: "installer", label: `with OpenCode's installer ("curl -fsSL https://opencode.ai/install | bash" \u2014 into ~/.opencode, no sudo; it adds OpenCode to your PATH)` });
+  return plans;
 }
 function openCodeHere() {
   const path = findOpenCode();

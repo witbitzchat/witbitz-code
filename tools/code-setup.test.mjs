@@ -135,7 +135,8 @@ function fakeSetup(over = {}) {
     port: over.port || 4096,
     portExplicit: !!over.portExplicit,
     findOpenCode: () => (state.opencode ? '/usr/bin/opencode' : ''),
-    installOpenCode: () => { state.npm++; state.opencode = over.npmWorks !== false; return state.opencode },
+    openCodeInstallPlans: () => over.plans ?? [{ kind: 'npm', label: 'with npm ("npm install -g opencode-ai")' }],
+    installOpenCode: (kind) => { state.npm++; (state.tried ||= []).push(kind); state.opencode = (over.works ?? { npm: over.npmWorks !== false, installer: true })[kind]; return state.opencode },
     allPairings: () => state.pairings,
     portOf: pairingPort,
     pair: async (port) => {
@@ -551,4 +552,30 @@ test('uninstall asks about OpenCode itself, naming how it was installed; the clo
   const flagged = fakeUninstall({ yes: true, removeOpenCode: true, oc: OC })
   await runUninstall(flagged.d)
   assert.equal(flagged.state.ocRemoved, 'installer')
+})
+
+const PLAN_NPM = { kind: 'npm', label: 'with npm ("npm install -g opencode-ai")' }
+const PLAN_INSTALLER = { kind: 'installer', label: "with OpenCode's installer (\"curl -fsSL https://opencode.ai/install | bash\" — into ~/.opencode, no sudo; it adds OpenCode to your PATH)" }
+
+test("npm that needs sudo is never offered: the owner's test box gets OpenCode's installer", async () => {
+  const f = fakeSetup({ plans: [PLAN_INSTALLER], answers: [''], state: { pairings: [PAIRED_4096], tr: true, tinfoil: 'tk' }, serviceAvailable: false })
+  const r = await runSetup(f.d)
+  assert.equal(r.opencode, true)
+  assert.deepEqual(f.state.tried, ['installer'])
+  assert.match(f.text(), /Install it now with OpenCode's installer \("curl -fsSL https:\/\/opencode\.ai\/install \| bash" — into ~\/\.opencode, no sudo/)
+  assert.doesNotMatch(f.text(), /npm install -g opencode-ai"\? \[Y\/n\]/)
+})
+
+test('when npm fails anyway, the installer is offered next; when everything fails it names the no-sudo way first', async () => {
+  const f = fakeSetup({ plans: [PLAN_NPM, PLAN_INSTALLER], works: { npm: false, installer: true }, answers: ['', ''], state: { pairings: [PAIRED_4096], tr: true, tinfoil: 'tk' }, serviceAvailable: false })
+  const r = await runSetup(f.d)
+  assert.equal(r.opencode, true)
+  assert.deepEqual(f.state.tried, ['npm', 'installer'])
+  assert.match(f.text(), /✖ That did not install OpenCode\./)
+  const none = fakeSetup({ plans: [PLAN_NPM, PLAN_INSTALLER], works: { npm: false, installer: false }, answers: ['', ''] })
+  assert.equal((await runSetup(none.d)).stopped, 'opencode')
+  assert.match(none.text(), /Install it, then run setup again:\n +curl -fsSL https:\/\/opencode\.ai\/install \| bash +\(no sudo/)
+  const declined = fakeSetup({ plans: [PLAN_NPM, PLAN_INSTALLER], answers: ['n'] })
+  await runSetup(declined.d)
+  assert.equal(declined.state.tried, undefined, '"n" installs nothing and offers nothing else')
 })

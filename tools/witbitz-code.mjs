@@ -163,7 +163,12 @@ async function setup(args) {
     io: { say, ask: (q) => readLine(q), secret: (q) => readLine(q, { hidden: true }) },
     port,
     findOpenCode,
-    installOpenCode: () => spawnSync('npm', ['install', '-g', 'opencode-ai'], { stdio: 'inherit' }).status === 0,
+    openCodeInstallPlans,
+    installOpenCode: (kind) => (kind === 'npm'
+      ? spawnSync('npm', ['install', '-g', 'opencode-ai'], { stdio: 'inherit' }).status === 0
+      // measured 2026-09-14: non-interactive, no sudo, ~4 s — ~/.opencode/bin/opencode plus a "# opencode" PATH line
+      // (the layout `uninstall` removes); findOpenCode() then puts ~/.opencode/bin on this process's PATH
+      : spawnSync('bash', ['-c', 'curl -fsSL https://opencode.ai/install | bash'], { stdio: 'inherit' }).status === 0),
     portExplicit: args.includes('--port'),
     allPairings: () => loadPairings(undefined, () => {}),
     portOf: pairingPort,
@@ -210,6 +215,20 @@ function openCodeHolders(dir) {
     hits.push({ pid, cmd: String(spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout || '').trim() })
   }
   return hits
+}
+
+/** The ways to install OpenCode that work here without sudo, best first. */
+function openCodeInstallPlans() {
+  const has = (cmd) => spawnSync(process.platform === 'win32' ? 'where' : 'which', [cmd], { encoding: 'utf8' }).status === 0
+  const plans = []
+  if (has('npm')) {
+    const root = String(spawnSync('npm', ['root', '-g'], { encoding: 'utf8' }).stdout || '').trim()
+    let writable = false
+    try { if (root) { accessSync(existsSync(root) ? root : dirname(root), fsConstants.W_OK); writable = true } } catch { /* needs sudo */ }
+    if (writable) plans.push({ kind: 'npm', label: 'with npm ("npm install -g opencode-ai")' })
+  }
+  if (has('curl') && has('bash')) plans.push({ kind: 'installer', label: `with OpenCode's installer ("curl -fsSL https://opencode.ai/install | bash" — into ~/.opencode, no sudo; it adds OpenCode to your PATH)` })
+  return plans
 }
 
 /** OpenCode on this computer: how it was installed, and the command that removes it. */

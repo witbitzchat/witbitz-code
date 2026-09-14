@@ -305,7 +305,8 @@ async function askKey({ io, label, check }) {
 
 /**
  * The whole setup. `d` holds every outside effect, so the flow is tested end to end with fakes:
- *   io { say, ask, secret } · port · portExplicit (--port given) · findOpenCode() → path|'' · installOpenCode() → boolean
+ *   io { say, ask, secret } · port · portExplicit (--port given) · findOpenCode() → path|''
+ *   openCodeInstallPlans() → [{ kind: 'npm'|'installer', label }] (what works here, best first) · installOpenCode(kind) → boolean
  *   allPairings() → [] · portOf(pairing) → number · pair(port) · movePairing(pairing, port) · hasTrustedRouter()
  *   saveTrustedRouterKey(key) · tinfoilKey() · saveTinfoilKey(key) · checkTrustedRouter(key) · checkTinfoil(key)
  *   isListening(port) · service (serviceManager()) · serviceArgs { node, script, path } · bundled · serveHere(port)
@@ -321,13 +322,19 @@ export async function runSetup(d) {
   let oc = d.findOpenCode()
   if (!oc) {
     io.say('   OpenCode is not installed.')
-    if (yes(await io.ask('   Install it now with "npm install -g opencode-ai"? [Y/n] '))) {
-      if (d.installOpenCode()) oc = d.findOpenCode()
+    // Only what works without sudo (the owner's test box: npm is the system one in /usr/lib, so `npm install -g` failed
+    // with EACCES) — npm where its global folder is writable, else OpenCode's own installer into ~/.opencode. A way that
+    // fails offers the next one.
+    for (const plan of d.openCodeInstallPlans()) {
+      if (!yes(await io.ask(`   Install it now ${plan.label}? [Y/n] `))) break
+      if (d.installOpenCode(plan.kind)) oc = d.findOpenCode()
+      if (oc) break
+      io.say('   ✖ That did not install OpenCode.')
     }
     if (!oc) {
-      io.say('   ✖ OpenCode is still not installed. Install it one of these ways, then run setup again:')
-      io.say('       npm install -g opencode-ai')
-      io.say('       curl -fsSL https://opencode.ai/install | bash      (then open a new terminal)')
+      io.say('   ✖ OpenCode is still not installed. Install it, then run setup again:')
+      io.say('       curl -fsSL https://opencode.ai/install | bash      (no sudo — then open a new terminal)')
+      io.say('       npm install -g opencode-ai                         (if your npm can install without sudo)')
       return { ...result, stopped: 'opencode' }
     }
   }
