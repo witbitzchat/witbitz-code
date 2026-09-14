@@ -11,14 +11,18 @@
 //
 // It serves ONLY the calls the Code page makes (codeRelay.js `allowedRequest`): OpenCode can run shell commands here, so a
 // leaked secret must not unlock more than the page itself can do.
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { homedir, hostname } from 'node:os'
 import { join, resolve, relative } from 'node:path'
 import { RelayPeer, allowedRequest, allowedEventPath, projectResponse, RELAY_URL } from '../spaces/public/codeRelay.js'
 import { startConfidentialProxy, proxyPortFor, makeTinfoilReader, tinfoilKey } from './code-confidential.mjs'
 import { stageMessageBody, serveAttachment, removeSessionAttachments, pruneAttachments, attachmentRule, ATTACH_ROOT, MAX_FILE_BYTES } from './code-attachments.mjs' // attachments, the Claude Code way (docs/code-attachments.md)
 import { ATTACHMENT_ROUTE } from '../spaces/public/codeAttachments.js'
+import { serveOutput } from './code-outputs.mjs' // a file a reply produced, for the page's automatic preview
+import { OUTPUT_ROUTE } from '../spaces/public/codeOutputs.js'
 import { WitbitzNotes } from './opencode-plugins/witbitz-notes.js' // project notes: the connector allows reads of a session's notes folder
+import { probeTools } from './code-tools-probe.mjs' // "Set up this computer": which suggested tools are installed (a PATH lookup)
 import { startAutoRunner } from './code-auto-runner.mjs' // Auto mode: permission asks decided here (docs/code-auto-mode.md)
 
 export const VERSION = '1'
@@ -75,10 +79,10 @@ function sseReader(onData) {
  * Serve the given pairings. Returns { stop, peers } — `peers` is one RelayPeer per pairing.
  * Options exist for tests: fetchImpl, WebSocketImpl, flushMs, log.
  */
-export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, notesConfidentialList = WitbitzNotes.helpers.CONFIDENTIAL_LIST } = {}) {
+export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, notesConfidentialList = WitbitzNotes.helpers.CONFIDENTIAL_LIST, toolsProbe = probeTools } = {}) {
   const running = []
   try { const n = pruneAttachments(attachRoot); if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`) } catch { /* no folder yet */ }
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }))
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList, toolsProbe }))
   return {
     peers: running.map((r) => r.peer),
     /** What the confidential-model proxy is doing for a session (code-confidential.mjs onProgress), to the phones. */
@@ -98,7 +102,7 @@ function tinfoilReaderForKey() {
   return reader
 }
 
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }) {
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList, toolsProbe }) {
   const name = pairing.name || hostname()
   const base = String(pairing.opencodeUrl || 'http://127.0.0.1:4096').replace(/\/+$/, '')
   const password = () => pairing.password || parseEnvPassword(existsSync(pairing.envFile || DEFAULT_ENV) ? readFileSync(pairing.envFile || DEFAULT_ENV, 'utf8') : '')
@@ -128,7 +132,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   })
 
   // caps: what this connector can do beyond the requests — a page shows the Auto switch only when `auto` is here.
-  function hello() { if (nonce) peer.send({ t: 'hello', ver: VERSION, name, computerId: pairing.computerId || '', k: nonce, ts: Date.now(), caps: ['auto', 'attachments'], auto: auto ? auto.sessions() : [] }) }
+  function hello() { if (nonce) peer.send({ t: 'hello', ver: VERSION, name, computerId: pairing.computerId || '', k: nonce, ts: Date.now(), caps: ['auto', 'attachments', 'outputs'], auto: auto ? auto.sessions() : [] }) }
 
   async function handle(m) {
     if (!m || typeof m.t !== 'string') return
@@ -140,6 +144,9 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     // Auto mode on/off for one session — nonce-checked like a request (a recording cannot switch it). No new power: a page
     // that can switch Auto could already answer the same asks itself.
     if (m.t === 'auto') { if (current && auto && auto.setAuto(m.sid, m.dir, !!m.on)) hello(); return }
+    // Which suggested tools this computer has (spaces/public/codeTools.js) — a PATH lookup, nonce-checked like a request.
+    // An older connector never answers, and the page offers nothing.
+    if (m.t === 'tools') { if (current) peer.send({ t: 'tools', ...toolsProbe() }); return }
     if (m.t !== 'req') return
     const id = typeof m.id === 'string' ? m.id : ''
     if (!id) return
@@ -152,6 +159,21 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     if (m.m === 'GET' && path === ATTACHMENT_ROUTE) {
       const u = new URLSearchParams(query)
       const out = serveAttachment({ root: attachRoot, session: u.get('session'), file: u.get('file') })
+      return reply(out.st, out.b)
+    }
+    // A file a reply produced, for the page's preview under it (spaces/public/codeOutputs.js): answered HERE, from the
+    // folder OpenCode reports for the session — never one the page names — and logged on this computer (a digest of the
+    // path, never the path).
+    if (m.m === 'GET' && path === OUTPUT_ROUTE) {
+      const u = new URLSearchParams(query)
+      const sid = u.get('session') || ''
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(sid)) return reply(400, { error: 'not a session id' })
+      const dirQuery = u.get('directory') ? `directory=${encodeURIComponent(u.get('directory'))}` : ''
+      const session = await sessionFor(sid, dirQuery)
+      if (!session || typeof session.directory !== 'string') return reply(404, { error: 'no such session on this computer' })
+      const statOnly = u.get('stat') === '1'
+      const out = serveOutput({ directory: session.directory, path: u.get('path'), stat: statOnly })
+      logOutput({ at: Date.now(), session: sid, digest: createHash('sha256').update(String(u.get('path') || '')).digest('hex'), stat: statOnly, st: out.st })
       return reply(out.st, out.b)
     }
     if (!allowedRequest(m.m, m.p)) return reply(403, { error: 'not allowed by the connector' })
@@ -221,6 +243,10 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   // that already exists; a same-prefix sibling folder, another session's folder and the root still ask.
   const ruled = new Set()
   /** The session as OpenCode has it, or null when it has no such session (or cannot say). */
+  // Each preview fetch, on this computer: when, which session, a digest of the path (never the path), stat or bytes, the answer.
+  function logOutput(rec) {
+    try { mkdirSync(autoDir, { recursive: true }); appendFileSync(join(autoDir, 'output-log.jsonl'), JSON.stringify(rec) + '\n', { mode: 0o600 }) } catch { /* a log never breaks a preview */ }
+  }
   async function sessionFor(sid, query) {
     try {
       const r = await fetchImpl(`${base}/session/${sid}${query ? '?' + query : ''}`, { headers: auth() })

@@ -29,6 +29,7 @@ export function directTransport({ base, pass, fetchImpl = (...a) => fetch(...a) 
     onAuto: () => () => {},
     onProgress: () => () => {}, // the confidential-model proxy lives in the connector too
     setAuto: () => false,
+    askTools: async () => null, // a direct server has no connector to look
     kick: () => {},
     close: () => {},
     async request(method, p, body) {
@@ -80,6 +81,7 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
   let caps = []
   let autoList = []
   const autoListeners = new Set()
+  const toolWaiters = [] // askTools() calls waiting for the computer's {t:'tools'} answer
   const tellAuto = (e) => { for (const fn of autoListeners) { try { fn(e) } catch { /* */ } } }
   const progressListeners = new Set() // what a confidential model is doing (codeProgress.js)
   let resubTimer = 0
@@ -136,6 +138,7 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     onMessage: (m) => {
       if (m.t === 'hello') { onHello(m); return }
       if (m.t === 'progress') { for (const fn of progressListeners) { try { fn(m) } catch { /* */ } } return }
+      if (m.t === 'tools') { const waiting = toolWaiters.splice(0); for (const w of waiting) w(m); return }
       if (m.t === 'autoverdict') { if (typeof m.sessionID === 'string' && typeof m.action === 'string') tellAuto({ kind: 'verdict', verdict: m }); return }
       if (m.t === 'res') {
         const e = pending.get(m.id)
@@ -187,6 +190,17 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     onProgress(fn) { progressListeners.add(fn); return () => progressListeners.delete(fn) },
     /** Switch Auto for one session on the computer (nonce-checked there). The next hello confirms it. */
     setAuto(sid, dir, on) { if (!nonce || !caps.includes('auto')) return false; peer.send({ t: 'auto', k: nonce, sid, dir, on: !!on }); return true },
+    /** Which suggested tools the computer has ("Set up this computer"): its `{t:'tools'}` answer, or null when it does not
+     *  answer in `ms` — a connector from before this never does. */
+    askTools(ms = 6000) {
+      if (!nonce) return Promise.resolve(null)
+      return new Promise((resolve) => {
+        const done = (m) => { clearTimeout(timer); const i = toolWaiters.indexOf(done); if (i >= 0) toolWaiters.splice(i, 1); resolve(m) }
+        const timer = setTimeout(() => done(null), ms)
+        toolWaiters.push(done)
+        peer.send({ t: 'tools', k: nonce })
+      })
+    },
     kick: () => peer.kick(),
     close() {
       clearInterval(resubTimer); clearInterval(freshTimer); clearTimeout(giveUpTimer)

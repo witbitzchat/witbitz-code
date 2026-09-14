@@ -33,6 +33,8 @@
 //   Trap eval: a fresh session with a matching note opened it 4/4 (0 before) and kept out of the Auto trap 2/2 (3/6 without);
 //   "that's right" was saved 4/5 — but "you missed something" 0/1: it fixed it and ended, having judged the change "trivial"
 //   at its first answer. A correction is now named as one, whatever was decided earlier in the session.
+//   Correction eval (0c85d82b): saved 4/5, the next session followed the rule 4/4 (0/6 without a note). The miss was a
+//   24-second fix turn that skipped the check; two notes gave the person's rule a reason they never gave. Both are named now.
 // Hardening (the review of the design): notes can carry text the agent read from untrusted places, so they go in as
 // reference, capped, with obvious secrets removed; a regular model never gets confidential notes. Nothing here may throw
 // into a turn. ★ Export ONLY the plugin: OpenCode calls every exported function as a plugin.
@@ -201,7 +203,7 @@ function buildInjection({ paths, agents = '', index = '', confidentialIndex = ''
     'description: one line saying when this note applies',
     'type: user | feedback | project | reference',
     '---',
-    'then the fact. For feedback and project notes, follow it with a **Why:** line and a **How to apply:** line.',
+    'then the fact. For feedback and project notes, follow it with a **Why:** line — the reason the person gave, or "not given" if they gave none, never a reason you guessed — and a **How to apply:** line.',
     '- user: who the person is — their role, what they know, how they like to work.',
     '- feedback: how the person wants work done here — their corrections AND the approaches they confirmed, with the reason.',
     '- project: decisions, constraints, deadlines and traps that the code and git history do not show (dates as YYYY-MM-DD).',
@@ -213,6 +215,7 @@ function buildInjection({ paths, agents = '', index = '', confidentialIndex = ''
     '## Before you finish a turn — REQUIRED',
     'Check: did the person correct you or confirm an approach, tell you something about themselves, decide something with you, or did you run into a trap that cost real effort and that the code does not show? If so, your LAST step before the final answer is to save it as a note, as above. If not, save nothing and end your answer with "Notes: nothing new."',
     'A message saying you missed something, got something wrong or should do it differently is a correction: save what you should have known as a feedback note, after you fix it — even if you decided earlier in this session that nothing was worth a note.',
+    'Do this check on every turn, also a short one that only makes a quick fix. "Notes: nothing new." goes in your answer only, never inside a note.',
     'Use the write and edit tools — the folder already exists, so no shell commands.')
   return out.join('\n')
 }

@@ -18,6 +18,7 @@ import os
 import re
 import socket
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -173,7 +174,7 @@ async def conformance(rig: Rig, connector) -> None:
         await client.start()
         hello = client.hellos()[-1]
         assert set(hello) == {"t", "ver", "name", "computerId", "k", "ts", "caps", "auto"} and hello["ver"] == "1"
-        assert (hello["caps"], hello["auto"]) == (["auto", "attachments"], []), "both connectors do Auto mode (test_auto.py) and save attachments"
+        assert (hello["caps"], hello["auto"]) == (["auto", "attachments", "outputs"], []), "both connectors do Auto mode (test_auto.py), save attachments and serve produced files"
         assert (hello["name"], hello["computerId"]) == ("test-box", "cmp_test") and isinstance(hello["ts"], int)
         assert re.fullmatch(r"[A-Za-z0-9_-]{24}", hello["k"]), "18 random bytes, base64url"
 
@@ -289,6 +290,27 @@ async def conformance(rig: Rig, connector) -> None:
         assert not any(h.get("url", "").startswith("/witbitz") for h in rig.oc.seen_copy()), "OpenCode never sees the route"
         assert (await client.call("DELETE", "/session/ses_1?directory=%2Fw"))["st"] == 200
         assert await until(lambda: not (attach_root / "ses_1").exists()), "a deleted session takes its files along"
+
+        # OUTPUTS (spaces/public/codeOutputs.js): a file a reply produced comes back for the preview under it — from the folder
+        # OpenCode reports for the session, whatever folder the page claims; outside it, or a secret-looking name, refused.
+        work = Path(tempfile.mkdtemp(prefix="wb-conf-out-")) / "תיקייה 1"
+        (work / "out").mkdir(parents=True)
+        pdf = work / "out" / "fixed.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fixed")
+        os.utime(pdf, (1789000000, 1789000000))
+        (work.parent / "other.pdf").write_bytes(b"not in the session")
+        rig.oc.session_dirs["ses_out"] = str(work)
+        q = lambda p, extra="": f"/witbitz/output?session=ses_out&directory=%2Fclaimed&path={urllib.parse.quote(str(p), safe='')}{extra}"  # noqa: E731
+        stat = await client.call("GET", q(pdf, "&stat=1"))
+        assert stat["st"] == 200 and json.loads(stat["b"]) == {"name": "fixed.pdf", "kind": "pdf", "mime": "application/pdf", "size": 14, "mtime": 1789000000000}
+        full = await client.call("GET", q(pdf))
+        assert full["st"] == 200 and json.loads(full["b"]) == {"name": "fixed.pdf", "kind": "pdf", "mime": "application/pdf", "size": 14, "mtime": 1789000000000,
+                                                                "b64": base64.b64encode(b"%PDF-1.4 fixed").decode()}
+        assert (await client.call("GET", q(work.parent / "other.pdf")))["st"] == 403
+        assert (await client.call("GET", q(work / "out" / "my-secret.pdf")))["st"] == 403
+        assert (await client.call("GET", f"/witbitz/output?session=ses_nope&path={urllib.parse.quote(str(pdf), safe='')}"))["st"] == 404
+        assert any(h.get("url") == "/session/ses_out?directory=%2Fclaimed" for h in rig.oc.seen_copy()), "looked up in the page's project"
+        assert not any(h.get("url", "").startswith("/witbitz") for h in rig.oc.seen_copy()), "OpenCode never sees the route"
     finally:
         await client.peer.aclose()
         await connector.stop()

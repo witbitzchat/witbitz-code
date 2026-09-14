@@ -10551,8 +10551,9 @@ if (false) {
 }
 
 // tools/opencode-connector.mjs
-import { readFileSync as readFileSync6, existsSync as existsSync6 } from "node:fs";
-import { homedir as homedir7, hostname as hostname2 } from "node:os";
+import { readFileSync as readFileSync7, existsSync as existsSync6, mkdirSync as mkdirSync5, appendFileSync as appendFileSync2 } from "node:fs";
+import { createHash as createHash8 } from "node:crypto";
+import { homedir as homedir8, hostname as hostname2 } from "node:os";
 import { join as join6, resolve as resolve3, relative } from "node:path";
 
 // tools/code-confidential.mjs
@@ -13546,18 +13547,18 @@ function startConfidentialProxy({
           res.end(text);
           return;
         }
-        const answer = makeAnswerGate({ hold });
+        const answer2 = makeAnswerGate({ hold });
         if (wantsStream && !res.headersSent) res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
         const dec3 = new TextDecoder();
         let streamed = false, told = "", toldAt = 0;
         for await (const c of up.body) {
-          const frames = answer.push(dec3.decode(c, { stream: true }));
+          const frames = answer2.push(dec3.decode(c, { stream: true }));
           if (wantsStream && frames.length) {
             for (const f of frames) res.write(f);
             if (!streamed) tell("answering");
             streamed = true;
           }
-          const w = answer.writing();
+          const w = answer2.writing();
           if (w) {
             const key2 = `${w.tool}\0${w.subject}`, at = Date.now();
             if (key2 !== told || at - toldAt >= PROGRESS_EVERY_MS) {
@@ -13567,11 +13568,11 @@ function startConfidentialProxy({
             }
           }
         }
-        answer.push(dec3.decode() + "\n\n");
+        answer2.push(dec3.decode() + "\n\n");
         tell("checking");
-        const v = await verify({ capture: answer.capture, requestBody: bytes, nonce: n, now: now(), fetchImpl, explainLapse: true, ...policies ? { policies } : {} });
+        const v = await verify({ capture: answer2.capture, requestBody: bytes, nonce: n, now: now(), fetchImpl, explainLapse: true, ...policies ? { policies } : {} });
         if (!v.ok) {
-          log(`code-confidential: REFUSED ${body.model} \u2014 ${v.error}${v.error === RETRYABLE ? receiptTiming(answer.capture) : ""}${hold ? " (held back)" : streamed ? " (after streaming)" : ""}${v.lapsedOnly ? " (every other check held)" : ""}`);
+          log(`code-confidential: REFUSED ${body.model} \u2014 ${v.error}${v.error === RETRYABLE ? receiptTiming(answer2.capture) : ""}${hold ? " (held back)" : streamed ? " (after streaming)" : ""}${v.lapsedOnly ? " (every other check held)" : ""}`);
           const e = refuse(502, refusalMessage(label, v.error), "receipt_unverified");
           e.streamed = streamed || wordsShown;
           e.lapsedOnly = v.lapsedOnly === true;
@@ -13580,7 +13581,7 @@ function startConfidentialProxy({
         const exp = v.claims && v.claims.upstream && v.claims.upstream.verification_expires_at;
         if (Number.isFinite(exp)) proofEnds.set(body.model, exp);
         if (wantsStream) {
-          for (const f of answer.held()) {
+          for (const f of answer2.held()) {
             const out = wordsShown ? withoutWords(f) : f;
             if (out) res.write(out);
           }
@@ -13588,7 +13589,7 @@ function startConfidentialProxy({
           return;
         }
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(completionOf(answer.events(), body.model)));
+        res.end(JSON.stringify(completionOf(answer2.events(), body.model)));
       };
       try {
         await once();
@@ -13829,11 +13830,143 @@ function pruneAttachments(root = ATTACH_ROOT, { days = 30, now = Date.now() } = 
   return n;
 }
 
+// tools/code-outputs.mjs
+import { realpathSync as realpathSync2, statSync as statSync2, readFileSync as readFileSync4 } from "node:fs";
+import { posix, basename } from "node:path";
+
+// spaces/public/codeOutputs.js
+var OUTPUT_ROUTE = "/witbitz/output";
+var MAX_PATH = 4096;
+var KINDS = {
+  pdf: "pdf",
+  png: "image",
+  jpg: "image",
+  jpeg: "image",
+  gif: "image",
+  webp: "image",
+  csv: "table",
+  tsv: "table",
+  md: "text",
+  markdown: "text",
+  txt: "text",
+  docx: "file",
+  doc: "file",
+  xlsx: "file",
+  xls: "file",
+  pptx: "file",
+  ppt: "file",
+  odt: "file",
+  ods: "file",
+  odp: "file",
+  rtf: "file",
+  zip: "file",
+  epub: "file",
+  heic: "file",
+  svg: "file",
+  html: "file",
+  htm: "file",
+  mp3: "file",
+  wav: "file",
+  m4a: "file",
+  mp4: "file",
+  mov: "file"
+};
+var MIME2 = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  txt: "text/plain",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  doc: "application/msword",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xls: "application/vnd.ms-excel",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ppt: "application/vnd.ms-powerpoint",
+  odt: "application/vnd.oasis.opendocument.text",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  odp: "application/vnd.oasis.opendocument.presentation",
+  rtf: "application/rtf",
+  zip: "application/zip",
+  epub: "application/epub+zip",
+  heic: "image/heic",
+  svg: "image/svg+xml",
+  html: "text/html",
+  htm: "text/html",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+  mp4: "video/mp4",
+  mov: "video/quicktime"
+};
+var extOf3 = (path) => {
+  const m = /(?:^|\/)[^/.][^/]*\.([A-Za-z0-9]+)$/.exec(String(path || ""));
+  return m ? m[1].toLowerCase() : "";
+};
+var outputKind = (path) => KINDS[extOf3(path)] || null;
+var outputMime = (path) => MIME2[extOf3(path)] || "application/octet-stream";
+var SENSITIVE_BASE = /^(\.env(\..+)?|\.npmrc|\.netrc|\.pypirc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?)$/;
+var SAFE_ENV = /^\.env\.(example|sample|template|dist)$/;
+function sensitivePath(rel) {
+  const parts = String(rel || "").split("/");
+  const base = parts[parts.length - 1] || "";
+  if (parts.some((p) => [".git", ".ssh", ".aws", ".gnupg", ".kube", ".docker"].includes(p))) return true;
+  if (SENSITIVE_BASE.test(base) && !SAFE_ENV.test(base)) return true;
+  if (/\.(pem|key|p12|pfx|jks|keystore)$/i.test(base)) return true;
+  return /secret|credential/i.test(base);
+}
+var validOutputPath = (p) => typeof p === "string" && p.startsWith("/") && p.length <= MAX_PATH && !/[\0\r\n]/.test(p);
+var EXT_ALT = Object.keys(KINDS).join("|");
+var BARE = new RegExp(`(?:^|[\\s(\\[<"'\xAB])((?:\\.{1,2}\\/|\\/)?[^\\s\`'"()<>\\[\\]\xAB\xBB]+\\.(?:${EXT_ALT}))(?=$|[\\s)\\]>"'\xBB.,;:!?])`, "giu");
+
+// tools/code-outputs.mjs
+var answer = (st, o) => ({ st, b: JSON.stringify(o) });
+function serveOutput({ directory, path, stat = false, maxBytes = MAX_SERVE_BYTES }) {
+  if (typeof directory !== "string" || !directory.startsWith("/") || !validOutputPath(path)) return answer(400, { error: "not a file in this session" });
+  const dir = posix.normalize(directory).replace(/\/+$/, "");
+  const abs = posix.normalize(path);
+  if (!dir || !abs.startsWith(dir + "/")) return answer(403, { error: "that file is outside the session's folder" });
+  if (sensitivePath(abs.slice(dir.length))) return answer(403, { error: "not shown: the name looks like a secret" });
+  if (!outputKind(abs)) return answer(400, { error: "not a file the page shows" });
+  let realDir = "", real = "";
+  try {
+    realDir = realpathSync2(dir);
+  } catch {
+    return answer(404, { error: "the session's folder is not on this computer" });
+  }
+  try {
+    real = realpathSync2(abs);
+  } catch {
+    return answer(404, { error: "that file is not on the computer (any more)" });
+  }
+  if (!real.startsWith(realDir + "/")) return answer(403, { error: "that file leads outside the session's folder" });
+  if (sensitivePath(real.slice(realDir.length))) return answer(403, { error: "not shown: the file looks like a secret" });
+  const kind = outputKind(real);
+  if (!kind) return answer(400, { error: "not a file the page shows" });
+  let st;
+  try {
+    st = statSync2(real);
+  } catch {
+    return answer(404, { error: "that file is not on the computer (any more)" });
+  }
+  if (!st.isFile()) return answer(400, { error: "not a file" });
+  const meta = { name: basename(abs), kind, mime: outputMime(real), size: st.size, mtime: Math.round(st.mtimeMs) };
+  if (stat) return answer(200, meta);
+  if (st.size > maxBytes) return answer(413, { ...meta, error: `the file is over ${Math.round(maxBytes / 1048576)} MB \u2014 too large to send to the phone` });
+  return answer(200, { ...meta, b64: readFileSync4(real).toString("base64") });
+}
+
 // tools/opencode-plugins/witbitz-notes.js
 import { createHash as createHash6 } from "node:crypto";
-import { existsSync as existsSync4, readFileSync as readFileSync4, statSync as statSync2, mkdirSync as mkdirSync3, writeFileSync as writeFileSync4, chmodSync as chmodSync4 } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync5, statSync as statSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync4, chmodSync as chmodSync4 } from "node:fs";
 import { homedir as homedir5 } from "node:os";
-import { basename, join as join5, resolve as resolve2 } from "node:path";
+import { basename as basename2, join as join5, resolve as resolve2 } from "node:path";
 var NOTES_ROOT = process.env.WITBITZ_NOTES_DIR || join5(homedir5(), ".local", "share", "witbitz-notes");
 var CONFIDENTIAL_LIST = process.env.WITBITZ_CONFIDENTIAL_MODELS || join5(homedir5(), ".config", "opencode", "witbitz-confidential-models.json");
 var CAP = { agents: 8e3, index: 1e4, indexLines: 100 };
@@ -13915,7 +14048,7 @@ If a tool is missing, say what to install. Delete temporary frames and audio whe
 var OLD_TEMPLATES = [OLD_TEMPLATE_1, OLD_TEMPLATE_2];
 var sha1 = (s) => createHash6("sha1").update(s).digest("hex");
 var projectRoot = ({ directory, worktree } = {}) => resolve2(worktree && worktree !== "/" ? worktree : directory || homedir5());
-var notesKey = (root) => `${(basename(root) || "root").replace(/[^A-Za-z0-9._-]/g, "_")}-${sha1(root).slice(0, 8)}`;
+var notesKey = (root) => `${(basename2(root) || "root").replace(/[^A-Za-z0-9._-]/g, "_")}-${sha1(root).slice(0, 8)}`;
 function notesPaths(root, base = NOTES_ROOT) {
   const dir = join5(base, notesKey(root));
   return { dir, agents: join5(dir, "AGENTS.md"), notes: join5(dir, "notes"), index: join5(dir, "notes", "INDEX.md"), confidential: join5(dir, "confidential"), confidentialIndex: join5(dir, "confidential", "INDEX.md") };
@@ -13945,8 +14078,8 @@ var listCache = { path: "", mtime: -1, set: /* @__PURE__ */ new Set() };
 function isConfidential(model, listPath = CONFIDENTIAL_LIST) {
   if (!model || !model.providerID || !model.id) return false;
   try {
-    const mtime = statSync2(listPath).mtimeMs;
-    if (listCache.path !== listPath || listCache.mtime !== mtime) listCache = { path: listPath, mtime, set: new Set(JSON.parse(readFileSync4(listPath, "utf8"))) };
+    const mtime = statSync3(listPath).mtimeMs;
+    if (listCache.path !== listPath || listCache.mtime !== mtime) listCache = { path: listPath, mtime, set: new Set(JSON.parse(readFileSync5(listPath, "utf8"))) };
     return listCache.set.has(`${model.providerID}/${model.id}`);
   } catch {
     return false;
@@ -13983,7 +14116,7 @@ function buildInjection({ paths, agents = "", index = "", confidentialIndex = ""
     "description: one line saying when this note applies",
     "type: user | feedback | project | reference",
     "---",
-    "then the fact. For feedback and project notes, follow it with a **Why:** line and a **How to apply:** line.",
+    'then the fact. For feedback and project notes, follow it with a **Why:** line \u2014 the reason the person gave, or "not given" if they gave none, never a reason you guessed \u2014 and a **How to apply:** line.',
     "- user: who the person is \u2014 their role, what they know, how they like to work.",
     "- feedback: how the person wants work done here \u2014 their corrections AND the approaches they confirmed, with the reason.",
     "- project: decisions, constraints, deadlines and traps that the code and git history do not show (dates as YYYY-MM-DD).",
@@ -13995,13 +14128,14 @@ function buildInjection({ paths, agents = "", index = "", confidentialIndex = ""
     "## Before you finish a turn \u2014 REQUIRED",
     'Check: did the person correct you or confirm an approach, tell you something about themselves, decide something with you, or did you run into a trap that cost real effort and that the code does not show? If so, your LAST step before the final answer is to save it as a note, as above. If not, save nothing and end your answer with "Notes: nothing new."',
     "A message saying you missed something, got something wrong or should do it differently is a correction: save what you should have known as a feedback note, after you fix it \u2014 even if you decided earlier in this session that nothing was worth a note.",
+    'Do this check on every turn, also a short one that only makes a quick fix. "Notes: nothing new." goes in your answer only, never inside a note.',
     "Use the write and edit tools \u2014 the folder already exists, so no shell commands."
   );
   return out.join("\n");
 }
 var read = (file) => {
   try {
-    return existsSync4(file) ? readFileSync4(file, "utf8") : "";
+    return existsSync4(file) ? readFileSync5(file, "utf8") : "";
   } catch {
     return "";
   }
@@ -14056,14 +14190,71 @@ var WitbitzNotes = async (ctx = {}) => {
 };
 WitbitzNotes.helpers = { TEMPLATE, OLD_TEMPLATES, NOTES_ROOT, CONFIDENTIAL_LIST, CAP, projectRoot, notesKey, notesPaths, rootFromSession, scrubSecrets, isConfidential, buildInjection };
 
-// tools/code-auto-runner.mjs
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync5, appendFileSync, mkdirSync as mkdirSync4, existsSync as existsSync5, renameSync as renameSync3, lstatSync as lstatSync2, realpathSync as realpathSync2 } from "node:fs";
-import { dirname as dirname2 } from "node:path";
+// tools/code-tools-probe.mjs
+import { accessSync, statSync as statSync4, constants } from "node:fs";
 import { homedir as homedir6 } from "node:os";
+
+// spaces/public/codeTools.js
+var TOOLS = [
+  { id: "git", label: "Git", why: "version control \u2014 most projects need it", bins: ["git"], pkg: { brew: "git", apt: "git", dnf: "git", pacman: "git", winget: "Git.Git" } },
+  { id: "ripgrep", label: "ripgrep", why: "fast search through code", bins: ["rg"], pkg: { brew: "ripgrep", apt: "ripgrep", dnf: "ripgrep", pacman: "ripgrep", winget: "BurntSushi.ripgrep.MSVC" } },
+  { id: "jq", label: "jq", why: "read and reshape JSON", bins: ["jq"], pkg: { brew: "jq", apt: "jq", dnf: "jq", pacman: "jq", winget: "jqlang.jq" } },
+  { id: "python", label: "Python 3", why: "scripts and data work", bins: ["python3", "python"], pkg: { brew: "python", apt: "python3", dnf: "python3", pacman: "python", winget: "Python.Python.3.12" } },
+  { id: "uv", label: "uv", why: "installs Python tools cleanly, without touching the system Python", bins: ["uv"], pkg: { brew: "uv", apt: "", dnf: "", pacman: "uv", winget: "astral-sh.uv" }, note: "where there is no package: the official installer from astral.sh" },
+  { id: "ffmpeg", label: "ffmpeg", why: "cut, convert and read video and audio", bins: ["ffmpeg"], pkg: { brew: "ffmpeg", apt: "ffmpeg", dnf: "ffmpeg", pacman: "ffmpeg", winget: "Gyan.FFmpeg" } },
+  { id: "whisper", label: "Whisper", why: "transcribe speech on this computer, without sending the audio anywhere", bins: ["whisper-cli", "whisper-cpp", "whisper"], pkg: { brew: "whisper-cpp", apt: "", dnf: "", pacman: "", winget: "" }, note: "where there is no package: `uv tool install openai-whisper`; either way it needs a model downloaded before first use \u2014 say how big it is before fetching it" },
+  { id: "poppler", label: "Poppler", why: "read PDFs as text and as images (pdftotext, pdftoppm)", bins: ["pdftotext"], pkg: { brew: "poppler", apt: "poppler-utils", dnf: "poppler-utils", pacman: "poppler", winget: "" } },
+  { id: "qpdf", label: "qpdf", why: "split, merge and repair PDFs", bins: ["qpdf"], pkg: { brew: "qpdf", apt: "qpdf", dnf: "qpdf", pacman: "qpdf", winget: "QPDF.QPDF" } },
+  { id: "tesseract", label: "Tesseract", why: "read the text in scans and screenshots (OCR)", bins: ["tesseract"], pkg: { brew: "tesseract", apt: "tesseract-ocr", dnf: "tesseract", pacman: "tesseract", winget: "UB-Mannheim.TesseractOCR" } },
+  { id: "pandoc", label: "Pandoc", why: "convert documents \u2014 Word, Markdown, HTML", bins: ["pandoc"], pkg: { brew: "pandoc", apt: "pandoc", dnf: "pandoc", pacman: "pandoc", winget: "JohnMacFarlane.Pandoc" } },
+  { id: "imagemagick", label: "ImageMagick", why: "resize and convert images", bins: ["magick", "convert"], pkg: { brew: "imagemagick", apt: "imagemagick", dnf: "ImageMagick", pacman: "imagemagick", winget: "ImageMagick.ImageMagick" } }
+];
+var PACKAGE_MANAGERS = {
+  darwin: [["brew", "brew"], ["port", "port"]],
+  linux: [["apt", "apt-get"], ["dnf", "dnf"], ["pacman", "pacman"], ["zypper", "zypper"], ["apk", "apk"], ["brew", "brew"]],
+  win32: [["winget", "winget"], ["choco", "choco"], ["scoop", "scoop"]]
+};
+
+// tools/code-tools-probe.mjs
+var EXTRA_POSIX = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/snap/bin", "/home/linuxbrew/.linuxbrew/bin"];
+var EXTRA_HOME = [".local/bin", ".cargo/bin", "bin"];
+function defaultIsExecutable(path) {
+  try {
+    if (!statSync4(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function searchDirs({ env = process.env, platform = process.platform, home = homedir6() } = {}) {
+  const win = platform === "win32";
+  const sep2 = win ? ";" : ":";
+  const fromPath = String(env.PATH || env.Path || "").split(sep2).filter(Boolean);
+  const extra = win ? [] : [...EXTRA_POSIX, ...home ? EXTRA_HOME.map((d) => `${home.replace(/\/+$/, "")}/${d}`) : []];
+  return [.../* @__PURE__ */ new Set([...fromPath, ...extra])];
+}
+function probeTools({ env = process.env, platform = process.platform, home = homedir6(), isExecutable = defaultIsExecutable } = {}) {
+  const win = platform === "win32";
+  const dirs = searchDirs({ env, platform, home });
+  const exts = win ? ["", ...String(env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map((e) => e.toLowerCase())] : [""];
+  const join9 = (d, b) => win ? `${d.replace(/[\\/]+$/, "")}\\${b}` : `${d.replace(/\/+$/, "")}/${b}`;
+  const has = (bin) => dirs.some((d) => exts.some((e) => isExecutable(join9(d, bin + e))));
+  const tools = {};
+  for (const t of TOOLS) tools[t.id] = t.bins.filter((b) => !(win && b === "convert")).some(has);
+  const os = Object.hasOwn(PACKAGE_MANAGERS, platform) ? platform : "";
+  const pm = os ? (PACKAGE_MANAGERS[os].find(([, bin]) => has(bin)) || [""])[0] : "";
+  return { tools, platform: { os, pm } };
+}
+
+// tools/code-auto-runner.mjs
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync5, appendFileSync, mkdirSync as mkdirSync4, existsSync as existsSync5, renameSync as renameSync3, lstatSync as lstatSync2, realpathSync as realpathSync3 } from "node:fs";
+import { dirname as dirname2 } from "node:path";
+import { homedir as homedir7 } from "node:os";
 
 // tools/code-auto.mjs
 import { createHash as createHash7 } from "node:crypto";
-import { posix } from "node:path";
+import { posix as posix2 } from "node:path";
 var SEVERITY_CEILING = 70;
 var MAX_REQUEST_CHARS = 4e3;
 var MAX_MESSAGES = 6;
@@ -14190,11 +14381,11 @@ function wordStaysInProject(w, dir) {
   }
   if (v.includes("$") || v.startsWith("~") || /(^|\/)\.\.(\/|$)/.test(v)) return false;
   if (v.startsWith("/")) {
-    const d = posix.normalize(String(dir || "")).replace(/\/+$/, "");
-    const abs = posix.normalize(v);
-    return !!d && d.startsWith("/") && (abs === d || abs.startsWith(d + "/")) && !sensitivePath(abs.slice(d.length));
+    const d = posix2.normalize(String(dir || "")).replace(/\/+$/, "");
+    const abs = posix2.normalize(v);
+    return !!d && d.startsWith("/") && (abs === d || abs.startsWith(d + "/")) && !sensitivePath2(abs.slice(d.length));
   }
-  return !sensitivePath("/" + v);
+  return !sensitivePath2("/" + v);
 }
 var WRITES = {
   sort: (a) => a.some((x) => /^-[^-]*o/.test(x) || /^--output(=|$)/.test(x)),
@@ -14248,23 +14439,23 @@ function bashReadOnly(shell, ctx) {
   if (shell.substitution || shell.redirect || !shell.segments.length) return false;
   return shell.segments.every((seg) => segmentReadOnly(seg, ctx));
 }
-var SENSITIVE_BASE = /^(\.env(\..+)?|\.npmrc|\.netrc|\.pypirc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?)$/;
-var SAFE_ENV = /^\.env\.(example|sample|template|dist)$/;
-function sensitivePath(abs) {
+var SENSITIVE_BASE2 = /^(\.env(\..+)?|\.npmrc|\.netrc|\.pypirc|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?)$/;
+var SAFE_ENV2 = /^\.env\.(example|sample|template|dist)$/;
+function sensitivePath2(abs) {
   const parts = abs.split("/");
   const base = parts[parts.length - 1] || "";
   if (parts.some((p) => [".git", ".ssh", ".aws", ".gnupg", ".kube", ".docker"].includes(p))) return true;
-  if (SENSITIVE_BASE.test(base) && !SAFE_ENV.test(base)) return true;
+  if (SENSITIVE_BASE2.test(base) && !SAFE_ENV2.test(base)) return true;
   if (/\.(pem|key|p12|pfx|jks|keystore)$/i.test(base)) return true;
   return /secret|credential/i.test(base);
 }
 function editInsideProject(patterns, directory) {
-  const dir = posix.normalize(String(directory || "")).replace(/\/+$/, "");
+  const dir = posix2.normalize(String(directory || "")).replace(/\/+$/, "");
   if (!dir || !dir.startsWith("/") || !Array.isArray(patterns) || !patterns.length) return false;
   return patterns.every((p) => {
     if (typeof p !== "string" || !p || /[*?[\]{}]/.test(p)) return false;
-    const abs = posix.normalize(p.startsWith("/") ? p : dir + "/" + p);
-    return abs.startsWith(dir + "/") && !sensitivePath(abs.slice(dir.length));
+    const abs = posix2.normalize(p.startsWith("/") ? p : dir + "/" + p);
+    return abs.startsWith(dir + "/") && !sensitivePath2(abs.slice(dir.length));
   });
 }
 var SCRATCH_DIR = "/tmp/opencode";
@@ -14272,8 +14463,8 @@ function inScratch(p, glob) {
   if (typeof p !== "string" || !p) return false;
   const v = glob && p.endsWith("/*") ? p.slice(0, -2) : p;
   if (/[*?[\]{}]/.test(v) || !v.startsWith("/")) return false;
-  const abs = posix.normalize(v);
-  return (abs === SCRATCH_DIR || abs.startsWith(SCRATCH_DIR + "/")) && !sensitivePath(abs.slice(SCRATCH_DIR.length));
+  const abs = posix2.normalize(v);
+  return (abs === SCRATCH_DIR || abs.startsWith(SCRATCH_DIR + "/")) && !sensitivePath2(abs.slice(SCRATCH_DIR.length));
 }
 var metadataOf = (req) => req.metadata && typeof req.metadata === "object" ? req.metadata : {};
 function askInScratch(req) {
@@ -14287,7 +14478,7 @@ function editInScratch(patterns) {
 }
 function scratchPaths(req) {
   const md = metadataOf(req || {});
-  return [...Array.isArray(req && req.patterns) ? req.patterns : [], md.filepath, md.parentDir].filter((p) => typeof p === "string" && p).map((p) => posix.normalize(p.endsWith("/*") ? p.slice(0, -2) : p));
+  return [...Array.isArray(req && req.patterns) ? req.patterns : [], md.filepath, md.parentDir].filter((p) => typeof p === "string" && p).map((p) => posix2.normalize(p.endsWith("/*") ? p.slice(0, -2) : p));
 }
 function classifyDeterministic(req, ctx = {}) {
   if (!req || typeof req.permission !== "string") return null;
@@ -14459,12 +14650,12 @@ function scratchOnDisk(paths, { dir = SCRATCH_DIR } = {}) {
   try {
     const st = lstatSync2(dir);
     if (!st.isDirectory() || typeof process.getuid === "function" && st.uid !== process.getuid()) return false;
-    const root = realpathSync2(dir);
+    const root = realpathSync3(dir);
     for (const p of paths) {
       for (let cur = p; ; ) {
         let real = null;
         try {
-          real = realpathSync2(cur);
+          real = realpathSync3(cur);
         } catch {
           let exists = false;
           try {
@@ -14488,7 +14679,7 @@ function scratchOnDisk(paths, { dir = SCRATCH_DIR } = {}) {
     return false;
   }
 }
-function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath, logPath, pollMs = 1e3, reviewTimeoutMs = 3e4, home = homedir6(), onVerdict = () => {
+function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath, logPath, pollMs = 1e3, reviewTimeoutMs = 3e4, home = homedir7(), onVerdict = () => {
 }, log = console.error, now = Date.now, scratchCheck = scratchOnDisk }) {
   const root = String(base || "").replace(/\/+$/, "");
   const auto = /* @__PURE__ */ new Map();
@@ -14500,7 +14691,7 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
   let stopped = false;
   let polling = false;
   try {
-    const doc = statePath && existsSync5(statePath) ? JSON.parse(readFileSync5(statePath, "utf8")) : null;
+    const doc = statePath && existsSync5(statePath) ? JSON.parse(readFileSync6(statePath, "utf8")) : null;
     for (const [sid, v] of Object.entries(doc && doc.sessions || {})) if (/^ses/.test(sid) && v && typeof v.dir === "string" && v.dir.startsWith("/")) auto.set(sid, { dir: v.dir, at: Number(v.at) || 0 });
   } catch (e) {
     log(`code-auto: ignoring an unreadable ${statePath} (${e.message})`);
@@ -14535,9 +14726,9 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
     }
     return { ok: r.ok, status: r.status, json };
   }
-  async function reply(req, dir, answer, message) {
+  async function reply(req, dir, answer2, message) {
     try {
-      const r = await call2("POST", `/permission/${encodeURIComponent(req.id)}/reply`, dir, message ? { reply: answer, message } : { reply: answer });
+      const r = await call2("POST", `/permission/${encodeURIComponent(req.id)}/reply`, dir, message ? { reply: answer2, message } : { reply: answer2 });
       return r.ok;
     } catch {
       return false;
@@ -14755,9 +14946,9 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
 
 // tools/opencode-connector.mjs
 var VERSION = "1";
-var PAIRINGS_PATH2 = process.env.WITBITZ_CODE_PAIRINGS || join6(homedir7(), ".witbitz", "code", "pairings.json");
-var AUTO_DIR = process.env.WITBITZ_CODE_AUTO_DIR || join6(homedir7(), ".witbitz", "code");
-var DEFAULT_ENV = process.env.OPENCODE_ENV_FILE || join6(homedir7(), ".opencode-server.env");
+var PAIRINGS_PATH2 = process.env.WITBITZ_CODE_PAIRINGS || join6(homedir8(), ".witbitz", "code", "pairings.json");
+var AUTO_DIR = process.env.WITBITZ_CODE_AUTO_DIR || join6(homedir8(), ".witbitz", "code");
+var DEFAULT_ENV = process.env.OPENCODE_ENV_FILE || join6(homedir8(), ".opencode-server.env");
 var REQUEST_TIMEOUT_MS = 3e4;
 var HELLO_EVERY_MS = 2e4;
 var SUB_TTL_MS = 75e3;
@@ -14775,7 +14966,7 @@ function loadPairings(path = PAIRINGS_PATH2, log = console.error) {
   if (!existsSync6(path)) return [];
   let doc;
   try {
-    doc = JSON.parse(readFileSync6(path, "utf8"));
+    doc = JSON.parse(readFileSync7(path, "utf8"));
   } catch (e) {
     log(`opencode-connector: ${path} is not valid JSON (${e.message})`);
     return [];
@@ -14810,14 +15001,14 @@ function sseReader(onData) {
     }
   };
 }
-async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1e3, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, notesConfidentialList = WitbitzNotes.helpers.CONFIDENTIAL_LIST } = {}) {
+async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1e3, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, notesConfidentialList = WitbitzNotes.helpers.CONFIDENTIAL_LIST, toolsProbe = probeTools } = {}) {
   const running = [];
   try {
     const n = pruneAttachments(attachRoot);
     if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`);
   } catch {
   }
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }));
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList, toolsProbe }));
   return {
     peers: running.map((r) => r.peer),
     /** What the confidential-model proxy is doing for a session (code-confidential.mjs onProgress), to the phones. */
@@ -14830,7 +15021,7 @@ async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = glo
     }
   };
 }
-var NOTES_PLUGIN = join6(homedir7(), ".config", "opencode", "plugins", "witbitz-notes.js");
+var NOTES_PLUGIN = join6(homedir8(), ".config", "opencode", "plugins", "witbitz-notes.js");
 var readerKey = "";
 var reader = null;
 function tinfoilReaderForKey() {
@@ -14842,10 +15033,10 @@ function tinfoilReaderForKey() {
   }
   return reader;
 }
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }) {
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList, toolsProbe }) {
   const name = pairing.name || hostname2();
   const base = String(pairing.opencodeUrl || "http://127.0.0.1:4096").replace(/\/+$/, "");
-  const password = () => pairing.password || parseEnvPassword(existsSync6(pairing.envFile || DEFAULT_ENV) ? readFileSync6(pairing.envFile || DEFAULT_ENV, "utf8") : "");
+  const password = () => pairing.password || parseEnvPassword(existsSync6(pairing.envFile || DEFAULT_ENV) ? readFileSync7(pairing.envFile || DEFAULT_ENV, "utf8") : "");
   const auth = () => {
     const pw = password();
     return pw ? { authorization: "Basic " + Buffer.from("opencode:" + pw).toString("base64") } : {};
@@ -14886,7 +15077,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     }
   });
   function hello() {
-    if (nonce) peer.send({ t: "hello", ver: VERSION, name, computerId: pairing.computerId || "", k: nonce, ts: Date.now(), caps: ["auto", "attachments"], auto: auto ? auto.sessions() : [] });
+    if (nonce) peer.send({ t: "hello", ver: VERSION, name, computerId: pairing.computerId || "", k: nonce, ts: Date.now(), caps: ["auto", "attachments", "outputs"], auto: auto ? auto.sessions() : [] });
   }
   async function handle(m) {
     if (!m || typeof m.t !== "string") return;
@@ -14911,6 +15102,10 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
       if (current && auto && auto.setAuto(m.sid, m.dir, !!m.on)) hello();
       return;
     }
+    if (m.t === "tools") {
+      if (current) peer.send({ t: "tools", ...toolsProbe() });
+      return;
+    }
     if (m.t !== "req") return;
     const id = typeof m.id === "string" ? m.id : "";
     if (!id) return;
@@ -14921,6 +15116,18 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     if (m.m === "GET" && path === ATTACHMENT_ROUTE) {
       const u = new URLSearchParams(query);
       const out = serveAttachment({ root: attachRoot, session: u.get("session"), file: u.get("file") });
+      return reply(out.st, out.b);
+    }
+    if (m.m === "GET" && path === OUTPUT_ROUTE) {
+      const u = new URLSearchParams(query);
+      const sid = u.get("session") || "";
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(sid)) return reply(400, { error: "not a session id" });
+      const dirQuery = u.get("directory") ? `directory=${encodeURIComponent(u.get("directory"))}` : "";
+      const session = await sessionFor(sid, dirQuery);
+      if (!session || typeof session.directory !== "string") return reply(404, { error: "no such session on this computer" });
+      const statOnly = u.get("stat") === "1";
+      const out = serveOutput({ directory: session.directory, path: u.get("path"), stat: statOnly });
+      logOutput({ at: Date.now(), session: sid, digest: createHash8("sha256").update(String(u.get("path") || "")).digest("hex"), stat: statOnly, st: out.st });
       return reply(out.st, out.b);
     }
     if (!allowedRequest(m.m, m.p)) return reply(403, { error: "not allowed by the connector" });
@@ -14987,6 +15194,13 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     }
   }
   const ruled = /* @__PURE__ */ new Set();
+  function logOutput(rec) {
+    try {
+      mkdirSync5(autoDir, { recursive: true });
+      appendFileSync2(join6(autoDir, "output-log.jsonl"), JSON.stringify(rec) + "\n", { mode: 384 });
+    } catch {
+    }
+  }
   async function sessionFor(sid, query) {
     try {
       const r = await fetchImpl(`${base}/session/${sid}${query ? "?" + query : ""}`, { headers: auth() });
@@ -15157,8 +15371,8 @@ if (false) {
 
 // tools/code-setup.mjs
 import { spawnSync } from "node:child_process";
-import { readFileSync as readFileSync7, existsSync as existsSync7, mkdirSync as mkdirSync5, copyFileSync, writeFileSync as writeFileSync6, rmSync as rmSync3, chmodSync as chmodSync5, readdirSync as readdirSync2 } from "node:fs";
-import { homedir as homedir8 } from "node:os";
+import { readFileSync as readFileSync8, existsSync as existsSync7, mkdirSync as mkdirSync6, copyFileSync, writeFileSync as writeFileSync6, rmSync as rmSync3, chmodSync as chmodSync5, readdirSync as readdirSync2 } from "node:fs";
+import { homedir as homedir9 } from "node:os";
 import { join as join7, dirname as dirname3, resolve as resolve4 } from "node:path";
 var KEY_PAGES = { trustedrouter: "https://trustedrouter.com/console/api-keys", tinfoil: "https://dash.tinfoil.sh?tab=api-keys" };
 var TR_KEY_URL = "https://api.trustedrouter.com/v1/key";
@@ -15198,7 +15412,7 @@ async function checkTinfoilKey(key, { fetchImpl = fetch, timeoutMs = 15e3 } = {}
     return { ok: null, why: `could not reach Tinfoil (${e && (e.code || e.name) || e})` };
   }
 }
-var authPath = (env = process.env) => join7(env.XDG_DATA_HOME || join7(homedir8(), ".local", "share"), "opencode", "auth.json");
+var authPath = (env = process.env) => join7(env.XDG_DATA_HOME || join7(homedir9(), ".local", "share"), "opencode", "auth.json");
 function withAuthKey(text, provider, key) {
   let doc = {};
   if (text && String(text).trim()) {
@@ -15224,7 +15438,7 @@ function withPairingPort(doc, pairing, port) {
 var validPort = (port) => Number.isInteger(port) && port > 0 && port < 65536;
 var serviceName = (port) => port === 4096 ? "witbitz-code" : `witbitz-code-${port}`;
 var launchdLabel = (port) => port === 4096 ? "chat.witbitz.code" : `chat.witbitz.code.${port}`;
-var stableScript = (home = homedir8()) => join7(home, ".witbitz", "code", "witbitz-code.mjs");
+var stableScript = (home = homedir9()) => join7(home, ".witbitz", "code", "witbitz-code.mjs");
 var plain = (s) => {
   const v = String(s);
   if (/[\x00-\x1f\x7f]/.test(v)) throw new Error("a path contains a control character");
@@ -15283,15 +15497,15 @@ var runCmd = (cmd2, args) => {
   const r = spawnSync(cmd2, args, { encoding: "utf8" });
   return { status: r.error ? -1 : r.status, stdout: r.stdout || "", stderr: r.stderr || "" };
 };
-function serviceManager({ platform = process.platform, home = homedir8(), env = process.env, run = runCmd, uid = process.getuid ? process.getuid() : 0 } = {}) {
+function serviceManager({ platform = process.platform, home = homedir9(), env = process.env, run = runCmd, uid = process.getuid ? process.getuid() : 0 } = {}) {
   const put = (file, text) => {
-    mkdirSync5(dirname3(file), { recursive: true });
+    mkdirSync6(dirname3(file), { recursive: true });
     writeFileSync6(file, text, { mode: 420 });
   };
   const stage = (script) => {
     const dest = stableScript(home);
     if (resolve4(script) !== resolve4(dest)) {
-      mkdirSync5(dirname3(dest), { recursive: true, mode: 448 });
+      mkdirSync6(dirname3(dest), { recursive: true, mode: 448 });
       copyFileSync(script, dest);
       chmodSync5(dest, 420);
     }
@@ -15300,7 +15514,7 @@ function serviceManager({ platform = process.platform, home = homedir8(), env = 
   const outdated = (script) => {
     const dest = stableScript(home);
     try {
-      return resolve4(script) !== resolve4(dest) && !readFileSync7(script).equals(readFileSync7(dest));
+      return resolve4(script) !== resolve4(dest) && !readFileSync8(script).equals(readFileSync8(dest));
     } catch {
       return true;
     }
@@ -15439,7 +15653,7 @@ function readLine(prompt, { hidden = false, input = process.stdin, output = proc
     input.on("data", onData);
   });
 }
-var yes = (answer) => !/^n/i.test(String(answer || "").trim());
+var yes = (answer2) => !/^n/i.test(String(answer2 || "").trim());
 async function askKey({ io, label, check }) {
   for (let tries = 0; tries < 3; tries++) {
     const key = await io.secret(`   Paste your ${label} API key (it shows as *****; Enter to skip): `);
@@ -15785,12 +15999,12 @@ OpenCode's own data stays: ${sessions.dir} (sessions, saved logins) and its sett
 }
 
 // tools/witbitz-code.mjs
-import { readFileSync as readFileSync8, existsSync as existsSync8, mkdirSync as mkdirSync6, rmSync as rmSync4, readdirSync as readdirSync3, readlinkSync, realpathSync as realpathSync3, rmdirSync, accessSync, writeFileSync as writeFileSync7, copyFileSync as copyFileSync2, constants as fsConstants } from "node:fs";
-import { homedir as homedir9 } from "node:os";
+import { readFileSync as readFileSync9, existsSync as existsSync8, mkdirSync as mkdirSync7, rmSync as rmSync4, readdirSync as readdirSync3, readlinkSync, realpathSync as realpathSync4, rmdirSync, accessSync as accessSync2, writeFileSync as writeFileSync7, copyFileSync as copyFileSync2, constants as fsConstants } from "node:fs";
+import { homedir as homedir10 } from "node:os";
 import { join as join8, dirname as dirname4 } from "node:path";
 import { fileURLToPath } from "node:url";
 var VERSION2 = "1.2.0";
-var ENV_PATH2 = process.env.OPENCODE_ENV_FILE || join8(homedir9(), ".opencode-server.env");
+var ENV_PATH2 = process.env.OPENCODE_ENV_FILE || join8(homedir10(), ".opencode-server.env");
 var HELP = `witbitz-code ${VERSION2} \u2014 reach OpenCode on this computer from the Spaces Code section, end-to-end encrypted.
 
   setup [--port <n>] [--name <name>]
@@ -15833,20 +16047,20 @@ function isListening(port) {
 function hasTrustedRouter(env = process.env) {
   if (env.TRUSTEDROUTER_API_KEY) return true;
   try {
-    const auth = JSON.parse(readFileSync8(join8(env.XDG_DATA_HOME || join8(homedir9(), ".local", "share"), "opencode", "auth.json"), "utf8"));
+    const auth = JSON.parse(readFileSync9(join8(env.XDG_DATA_HOME || join8(homedir10(), ".local", "share"), "opencode", "auth.json"), "utf8"));
     return !!(auth && auth.trustedrouter);
   } catch {
     return false;
   }
 }
 var saveTinfoilKey = (key) => {
-  const text = existsSync8(ENV_PATH2) ? readFileSync8(ENV_PATH2, "utf8") : "";
+  const text = existsSync8(ENV_PATH2) ? readFileSync9(ENV_PATH2, "utf8") : "";
   writeSecret(ENV_PATH2, envSet(text, "TINFOIL_API_KEY", key));
 };
 var saveTrustedRouterKey = (key) => {
   const file = authPath();
-  mkdirSync6(dirname4(file), { recursive: true, mode: 448 });
-  writeSecret(file, withAuthKey(existsSync8(file) ? readFileSync8(file, "utf8") : "", "trustedrouter", key));
+  mkdirSync7(dirname4(file), { recursive: true, mode: 448 });
+  writeSecret(file, withAuthKey(existsSync8(file) ? readFileSync9(file, "utf8") : "", "trustedrouter", key));
 };
 async function setKey({ label, check, save, where, after }) {
   const key = await readLine(`${label} API key (it shows as *****): `, { hidden: true });
@@ -15886,7 +16100,7 @@ async function serve(args) {
       console.error("  npm install -g opencode-ai        or        curl -fsSL https://opencode.ai/install | bash");
       process.exit(1);
     }
-    const password = existsSync8(ENV_PATH2) ? parseEnvPassword(readFileSync8(ENV_PATH2, "utf8")) : "";
+    const password = existsSync8(ENV_PATH2) ? parseEnvPassword(readFileSync9(ENV_PATH2, "utf8")) : "";
     console.error(`witbitz-code: starting OpenCode on 127.0.0.1:${port}`);
     const content = mergeConfig(policyConfig(), hasTrustedRouter() ? proxyConfig(proxyPortFor(port)) : {});
     const env = { ...process.env, ...password ? { OPENCODE_SERVER_PASSWORD: password } : {}, OPENCODE_CONFIG_CONTENT: JSON.stringify(content) };
@@ -15936,7 +16150,7 @@ var portArg = (args) => {
 function findOpenCode() {
   const found = spawnSync2(process.platform === "win32" ? "where" : "which", ["opencode"], { encoding: "utf8" });
   if (found.status === 0 && found.stdout.trim()) return found.stdout.trim().split(/\r?\n/)[0];
-  const own = join8(homedir9(), ".opencode", "bin", "opencode");
+  const own = join8(homedir10(), ".opencode", "bin", "opencode");
   if (existsSync8(own)) {
     process.env.PATH = `${dirname4(own)}:${process.env.PATH || ""}`;
     return own;
@@ -15963,7 +16177,7 @@ async function setup(args) {
     portOf: pairingPort,
     // --port always: an OpenCode asked for moves an account already paired (upsertPairing)
     pair: (p) => main([...name ? ["--name", name] : [], "--port", String(p)]),
-    movePairing: (p, to) => writeSecret(PAIRINGS_PATH2, JSON.stringify(withPairingPort(JSON.parse(readFileSync8(PAIRINGS_PATH2, "utf8")), p, to), null, 1) + "\n"),
+    movePairing: (p, to) => writeSecret(PAIRINGS_PATH2, JSON.stringify(withPairingPort(JSON.parse(readFileSync9(PAIRINGS_PATH2, "utf8")), p, to), null, 1) + "\n"),
     hasTrustedRouter: () => hasTrustedRouter(),
     saveTrustedRouterKey,
     checkTrustedRouter: (k) => checkTrustedRouterKey(k),
@@ -15974,7 +16188,7 @@ async function setup(args) {
     portOwners: (p) => portOwners(p),
     wsl: (() => {
       try {
-        return /microsoft/i.test(readFileSync8("/proc/version", "utf8"));
+        return /microsoft/i.test(readFileSync9("/proc/version", "utf8"));
       } catch {
         return false;
       }
@@ -16001,7 +16215,7 @@ async function stopProcess(pid) {
       return true;
     }
     try {
-      return /^\d+ \(.*\) Z/.test(readFileSync8(`/proc/${pid}/stat`, "utf8"));
+      return /^\d+ \(.*\) Z/.test(readFileSync9(`/proc/${pid}/stat`, "utf8"));
     } catch {
       return false;
     }
@@ -16029,7 +16243,7 @@ function portOwners(port) {
     for (const f of ["/proc/net/tcp", "/proc/net/tcp6"]) {
       let text = "";
       try {
-        text = readFileSync8(f, "utf8");
+        text = readFileSync9(f, "utf8");
       } catch {
         continue;
       }
@@ -16058,7 +16272,7 @@ function portOwners(port) {
       if (!owns) continue;
       let cmd2 = "";
       try {
-        cmd2 = readFileSync8(`/proc/${p}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
+        cmd2 = readFileSync9(`/proc/${p}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
       } catch {
       }
       hits.push({ pid: Number(p), cmd: cmd2 });
@@ -16094,7 +16308,7 @@ function openCodeHolders(dir) {
       if (!holds) continue;
       let cmd2 = "";
       try {
-        cmd2 = readFileSync8(`/proc/${p}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
+        cmd2 = readFileSync9(`/proc/${p}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ");
       } catch {
       }
       hits.push({ pid: Number(p), cmd: cmd2 });
@@ -16118,7 +16332,7 @@ function openCodeInstallPlans() {
     let writable = false;
     try {
       if (root) {
-        accessSync(existsSync8(root) ? root : dirname4(root), fsConstants.W_OK);
+        accessSync2(existsSync8(root) ? root : dirname4(root), fsConstants.W_OK);
         writable = true;
       }
     } catch {
@@ -16132,15 +16346,15 @@ function openCodeHere() {
   const path = findOpenCode();
   let real = path;
   try {
-    real = path ? realpathSync3(path) : "";
+    real = path ? realpathSync4(path) : "";
   } catch {
   }
-  const info = openCodeInstall({ path, real, home: homedir9() });
+  const info = openCodeInstall({ path, real, home: homedir10() });
   let npmNeedsSudo = false;
   if (info.kind === "npm") {
     const root = String(spawnSync2("npm", ["root", "-g"], { encoding: "utf8" }).stdout || "").trim();
     try {
-      accessSync(root, fsConstants.W_OK);
+      accessSync2(root, fsConstants.W_OK);
     } catch {
       npmNeedsSudo = true;
     }
@@ -16151,10 +16365,10 @@ async function removeOpenCodeProgram(info) {
   const said = [];
   if (info.kind === "installer") {
     rmSync4(info.dir, { recursive: true, force: true });
-    for (const f of shellStartupFiles(homedir9(), process.env)) {
+    for (const f of shellStartupFiles(homedir10(), process.env)) {
       let text;
       try {
-        text = readFileSync8(f, "utf8");
+        text = readFileSync9(f, "utf8");
       } catch {
         continue;
       }
@@ -16178,12 +16392,12 @@ async function uninstall(args) {
     console.error("witbitz-code: uninstall asks before it removes anything \u2014 run it in a terminal, or pass --yes");
     process.exit(2);
   }
-  const codeDir = join8(homedir9(), ".witbitz", "code");
+  const codeDir = join8(homedir10(), ".witbitz", "code");
   const self = fileURLToPath(import.meta.url);
   const authFile = authPath();
   const hasTR = () => {
     try {
-      return !!JSON.parse(readFileSync8(authFile, "utf8")).trustedrouter;
+      return !!JSON.parse(readFileSync9(authFile, "utf8")).trustedrouter;
     } catch {
       return false;
     }
@@ -16202,16 +16416,16 @@ async function uninstall(args) {
     // the downloaded file deletes itself; run from the repository, the source stays
     script: true ? self : "",
     // saved keys only — a key that lives in the shell's environment is not this tool's to remove
-    hasKeys: () => [...existsSync8(ENV_PATH2) && /^\s*(?:export\s+)?TINFOIL_API_KEY=/m.test(readFileSync8(ENV_PATH2, "utf8")) ? ["Tinfoil key"] : [], ...hasTR() ? ["TrustedRouter key (in OpenCode's credentials)"] : []],
+    hasKeys: () => [...existsSync8(ENV_PATH2) && /^\s*(?:export\s+)?TINFOIL_API_KEY=/m.test(readFileSync9(ENV_PATH2, "utf8")) ? ["Tinfoil key"] : [], ...hasTR() ? ["TrustedRouter key (in OpenCode's credentials)"] : []],
     deleteKeys: () => {
-      if (existsSync8(ENV_PATH2)) writeSecret(ENV_PATH2, withoutEnvKeys(readFileSync8(ENV_PATH2, "utf8"), ["TINFOIL_API_KEY"]));
-      if (hasTR()) writeSecret(authFile, withoutAuthKey(readFileSync8(authFile, "utf8"), "trustedrouter"));
+      if (existsSync8(ENV_PATH2)) writeSecret(ENV_PATH2, withoutEnvKeys(readFileSync9(ENV_PATH2, "utf8"), ["TINFOIL_API_KEY"]));
+      if (hasTR()) writeSecret(authFile, withoutAuthKey(readFileSync9(authFile, "utf8"), "trustedrouter"));
     },
     removePath: (path) => rmSync4(path, { recursive: true, force: true }),
     // project notes: the folder the witbitz-notes plugin writes, and the plugin files tools/opencode-config.mjs installs
     notes: () => {
-      const root = process.env.WITBITZ_NOTES_DIR || join8(homedir9(), ".local", "share", "witbitz-notes");
-      const cfg = join8(process.env.XDG_CONFIG_HOME || join8(homedir9(), ".config"), "opencode");
+      const root = process.env.WITBITZ_NOTES_DIR || join8(homedir10(), ".local", "share", "witbitz-notes");
+      const cfg = join8(process.env.XDG_CONFIG_HOME || join8(homedir10(), ".config"), "opencode");
       let folders = 0;
       try {
         folders = readdirSync3(root, { withFileTypes: true }).filter((e) => e.isDirectory()).length;
@@ -16235,7 +16449,7 @@ async function uninstall(args) {
     stopProcess
   });
   if (r.done) try {
-    rmdirSync(join8(homedir9(), ".witbitz"));
+    rmdirSync(join8(homedir10(), ".witbitz"));
   } catch {
   }
   if (r.done && !r.left && PAIRINGS_PATH2 !== join8(codeDir, "pairings.json")) rmSync4(PAIRINGS_PATH2, { force: true });

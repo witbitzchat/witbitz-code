@@ -79,3 +79,28 @@ nothing else: edits and shell still ask. Files go to Tinfoil only when a key is 
 1. Retention: 30 days (proposed), or delete-with-session only?
 2. Text copies through Tinfoil for **regular** models too (more private than TrustedRouter; costs Tinfoil credits — on
    this computer that is the shared production key), or only for confidential models?
+
+## 8. The other direction — files a reply PRODUCED, previewed under it (built 2026-09-14)
+
+The owner, after an agent fixed a PDF and, asked to "upload it here", answered that a PDF cannot be shown in the chat:
+*"I think the user should automatically see a preview"*. Its answer had named the file's full path all along.
+
+**Which files** (`spaces/public/codeOutputs.js`, pure, shared cases in `spaces/test/codeOutputs.vectors.json`): a file the
+reply WROTE or EDITED (completed write/edit tools), or one its answer NAMES (a `code span`, a full path under the
+session's folder — matched from the folder itself, so "תיקייה 1" is not cut at its space — or a bare token). Never one it only
+read, never a path in the user's prompt, only inside the session's folder, never a secret-looking name, at most 6.
+Kinds: PDF (page 1), picture, table/text (first lines) preview; office files, archives, media → a chip; code → nothing.
+
+**Route** — connector-owned, never forwarded: `GET /witbitz/output?session=&path=[&stat=1]` (`tools/code-outputs.mjs`,
+Python `outputs.py`). The folder is the one OpenCode reports for the session (`GET /session/:id`), never one the page
+names. By name first (absolute, one line, inside, kind, not secret — so it cannot probe what exists elsewhere), then by
+disk (real path still inside, still not secret, a regular file), then size (20 MB, one relay message; `stat` answers
+without the bytes). Each answer is logged in `~/.witbitz/code/output-log.jsonl` as a digest of the path. The hello carries
+`caps: [..., 'outputs']`; without it (a direct server, an older connector) the page draws no cards.
+
+**Page**: cards under the answer once the reply has finished. The latest reply's files are fetched at once, older ones
+when their card scrolls into view; a PDF's page is rendered once into a picture and kept; a turn ending in that session
+drops the cache. A file whose mtime is past the reply's end says "changed since this reply"; a gone one says so. Tap →
+the sheet, large, with Download (share on a phone). No copies are kept: the file is read where it is.
+
+**What it grants**: the agent reads these files without asking; this carries one to its owner's phone, sealed end to end.

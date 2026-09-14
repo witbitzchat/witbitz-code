@@ -16,6 +16,7 @@ async function fakeOpenCode() {
   const streams = new Set()
   const big = 'z'.repeat(CHUNK * 2 + 123)
   const rules = new Map() // session path → its permission rules (PATCH appends)
+  const sessionDirs = new Map() // session id → its folder, as GET /session/:id reports it (produced files are served from there)
   const srv = createServer(async (req, res) => {
     let body = ''
     for await (const c of req) body += c
@@ -36,6 +37,7 @@ async function fakeOpenCode() {
     if (notesSession && path.split('/').length === 3 && req.method === 'GET') return json({ id: path.split('/')[2], ...notesSession, permission: rules.get(path) || [] })
     if (notesSession && path.split('/').length === 3 && req.method === 'PATCH') { rules.set(path, [...(rules.get(path) || []), ...JSON.parse(body).permission]); return json({}) }
     if (notesSession && path.endsWith('/message') && req.method === 'POST') return json({ echoed: JSON.parse(body) })
+    if (sessionDirs.has(path.split('/')[2]) && path.split('/').length === 3 && req.method === 'GET') return json({ id: path.split('/')[2], directory: sessionDirs.get(path.split('/')[2]) })
     if (path === '/session/ses_slow/message') { res.on('close', () => seen.push({ aborted: '/session/ses_slow/message' })); return } // never answers; res 'close' = the caller went away (req 'close' already fired once the body was read)
     if (path === '/event') {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -49,7 +51,7 @@ async function fakeOpenCode() {
   await new Promise((r) => srv.listen(0, '127.0.0.1', r))
   return {
     url: `http://127.0.0.1:${srv.address().port}`,
-    seen, big, streams, rules,
+    seen, big, streams, rules, sessionDirs,
     emit: (obj) => { for (const s of streams) s.write(`data: ${JSON.stringify(obj)}\n\n`) },
     close: () => new Promise((r) => { for (const s of streams) s.destroy(); srv.closeAllConnections(); srv.close(() => r()) }),
   }
@@ -335,6 +337,36 @@ test('ATTACHMENTS: files in a message are saved on the computer and OpenCode get
   // deleting the session takes its files along
   assert.equal((await call('DELETE', '/session/ses_1?directory=%2Fw')).st, 200)
   assert.ok(await until(() => !existsSync(join(attachRoot, 'ses_1'))), 'the session folder is gone')
+})
+
+// ── produced files, previewed under the reply (spaces/public/codeOutputs.js, tools/code-outputs.mjs) ────────────────────
+test('OUTPUTS: a file a reply produced comes back for the preview — from the folder OpenCode reports, logged as a digest', async (t) => {
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'wb-conn-out-'))
+  const dir = join(root, 'תיקייה 1'), autoDir = join(root, 'state')
+  mkdirSync(join(dir, 'out'), { recursive: true })
+  writeFileSync(join(dir, 'out', 'fixed.pdf'), '%PDF-1.4 fixed')
+  writeFileSync(join(root, 'other.pdf'), 'not in the session')
+  const { call, oc, got } = await rig(t, { connectorOptions: { autoDir, autoPollMs: 60_000 } })
+  oc.sessionDirs.set('ses_out', dir)
+  assert.ok(got.filter((m) => m.t === 'hello').at(-1).caps.includes('outputs'), 'the page learns it can ask for produced files')
+  const q = (path, extra = '') => `/witbitz/output?session=ses_out&directory=${encodeURIComponent('/claimed/by/page')}&path=${encodeURIComponent(path)}${extra}`
+  const stat = await call('GET', q(join(dir, 'out', 'fixed.pdf'), '&stat=1'))
+  assert.equal(stat.st, 200)
+  assert.deepEqual({ name: JSON.parse(stat.b).name, kind: JSON.parse(stat.b).kind, size: JSON.parse(stat.b).size }, { name: 'fixed.pdf', kind: 'pdf', size: 14 })
+  const bytes = await call('GET', q(join(dir, 'out', 'fixed.pdf')))
+  assert.equal(Buffer.from(JSON.parse(bytes.b).b64, 'base64').toString(), '%PDF-1.4 fixed')
+  assert.equal((await call('GET', q(join(root, 'other.pdf')))).st, 403, 'outside the folder OpenCode reports — whatever folder the page claimed')
+  assert.equal((await call('GET', `/witbitz/output?session=ses_nope&path=${encodeURIComponent(join(dir, 'out', 'fixed.pdf'))}`)).st, 404, 'no such session')
+  assert.equal((await call('GET', '/witbitz/output?session=..%2Fx&path=%2Fa.pdf')).st, 400)
+  assert.ok(oc.seen.some((s) => s.url === `/session/ses_out?directory=${encodeURIComponent('/claimed/by/page')}`), 'the session is looked up in the project the page is scoped to')
+  assert.equal(oc.seen.some((s) => s.url.startsWith('/witbitz')), false, 'OpenCode never sees the route')
+  const log = readFileSync(join(autoDir, 'output-log.jsonl'), 'utf8')
+  assert.equal(log.trim().split('\n').length, 3, 'every answer about a file in a known session — stat, bytes, the refusal')
+  assert.doesNotMatch(log, /fixed\.pdf|תיקייה/, 'a digest of the path, never the path')
+  assert.ok(existsSync(join(dir, 'out', 'fixed.pdf')))
 })
 
 test('ATTACHMENTS: a turn for a session OpenCode does not have saves nothing (an invented id must not get a folder)', async (t) => {

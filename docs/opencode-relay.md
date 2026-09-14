@@ -165,6 +165,8 @@ PATCH  /session/:id                     DELETE /session/:id
 GET    /path                            GET  /file                         (New session's folder picker)
 GET    /permission                      POST /permission/:permID/reply     (pending asks, so a card survives a session
                                                                             switch or reload; a Deny with a message)
+GET    /witbitz/attachment · GET /witbitz/output   → ANSWERED BY THE CONNECTOR, never forwarded: a saved attachment,
+                                                   and a file a reply produced (docs/code-attachments.md §8)
 GET    /event                           → never proxied as HTTP; `sub` starts the connector's own local SSE read
 ```
 

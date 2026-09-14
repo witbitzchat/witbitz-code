@@ -579,7 +579,7 @@ def test_wiring_the_page_switches_auto_and_the_verdict_comes_back(make, tmp_path
             client = PyClient(rig.secret, rig.relay.url)
             try:
                 await client.start()
-                assert client.hellos()[-1]["caps"] == ["auto", "attachments"]
+                assert client.hellos()[-1]["caps"] == ["auto", "attachments", "outputs"]
                 # a stale nonce cannot switch it: a recording cannot turn Auto on
                 await client.peer.send({"t": "auto", "k": "not-the-nonce", "sid": "ses_main", "dir": DIR, "on": True})
                 await asyncio.sleep(0.3)

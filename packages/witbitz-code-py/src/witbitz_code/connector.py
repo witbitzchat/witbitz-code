@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import codecs
+import hashlib
+import json
 import math
 import os
 import re
@@ -32,8 +34,10 @@ from . import _js
 from .attachments import (ATTACHMENT_ROUTE, MAX_FILE_BYTES, attachment_rule, default_root, prune_attachments,
                           remove_session_attachments, serve_attachment, stage_message_body)
 from .auto_runner import AutoRunner
+from .outputs import OUTPUT_ROUTE, serve_output
 from .pairings import DEFAULT_OPENCODE_URL, hostname, read_env_password
 from .relay import RELAY_URL, Connect, RelayPeer, allowed_event_path, allowed_request, project_response
+from .tools_probe import probe_tools
 
 VERSION = "1"  # the hello protocol version, as the JS connector sends it
 REQUEST_TIMEOUT_MS = 30_000
@@ -171,6 +175,7 @@ class PairingServer:
         # Auto mode's loop for this pairing (docs/code-auto-mode.md) — its state is read now, so the first hello lists it.
         safe_id = _js.utf16_slice(re.sub(r"[^A-Za-z0-9_-]", "_", _js.js_string(pairing.get("computerId") or "default")), 0, 64)
         auto_dir = Path(auto_dir) if auto_dir else default_auto_dir()
+        self._output_log = auto_dir / "output-log.jsonl"  # each preview fetch: a digest of the path, never the path
         self.auto = AutoRunner(base=self.base, auth=self._auth, client=client, poll_ms=auto_poll_ms, log=log,
                                state_path=auto_dir / f"auto-{safe_id}.json", log_path=auto_dir / "auto-log.jsonl",
                                on_verdict=lambda v: self.peer.send({"t": "autoverdict", **v, "ts": int(time.time() * 1000)}))
@@ -244,7 +249,7 @@ class PairingServer:
             return None  # no hello before this socket has its nonce
         # caps: what this connector can do beyond the requests — a page shows the Auto switch only when `auto` is here.
         return self.peer.send({"t": "hello", "ver": VERSION, "name": self.name, "computerId": self.pairing.get("computerId") or "",
-                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto", "attachments"], "auto": self.auto.sessions()})
+                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto", "attachments", "outputs"], "auto": self.auto.sessions()})
 
     def _auth(self) -> dict:
         pw = self.pairing.get("password") or read_env_password(Path(self.pairing["envFile"]) if self.pairing.get("envFile") else None)
@@ -273,6 +278,10 @@ class PairingServer:
             # page that can switch Auto could already answer the same asks itself.
             if current and self.auto.set_auto(m.get("sid"), m.get("dir"), _js.truthy(m.get("on"))):
                 self.hello()
+        elif t == "tools":
+            # Which suggested tools this computer has (spaces/public/codeTools.js) — a PATH lookup, nonce-checked like a request.
+            if current:
+                await self.peer.send({"t": "tools", **probe_tools()})
         elif t == "req":
             await self._request(m, current)
 
@@ -298,6 +307,25 @@ class PairingServer:
         if m.get("m") == "GET" and bare == ATTACHMENT_ROUTE:
             q = dict(urllib.parse.parse_qsl(query))
             st, b = serve_attachment(root=self._attach_root, session=q.get("session"), file=q.get("file"))
+            await reply(st, b)
+            return
+        # A file a reply produced, for the page's preview under it (outputs.py): answered HERE, from the folder OpenCode
+        # reports for the session — never one the page names — and logged on this computer as a digest of the path.
+        if m.get("m") == "GET" and bare == OUTPUT_ROUTE:
+            q = dict(urllib.parse.parse_qsl(query, keep_blank_values=True))
+            sid = q.get("session", "")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sid):
+                await reply(400, {"error": "not a session id"})
+                return
+            dir_query = "directory=" + urllib.parse.quote(q["directory"], safe="!'()*") if q.get("directory") else ""  # encodeURIComponent
+            session = await self._session_for(sid, dir_query)
+            if not session or not isinstance(session.get("directory"), str):
+                await reply(404, {"error": "no such session on this computer"})
+                return
+            stat_only = q.get("stat") == "1"
+            st, b = serve_output(directory=session["directory"], path=q.get("path"), stat=stat_only)
+            self._log_output({"at": int(time.time() * 1000), "session": sid, "digest": hashlib.sha256(q.get("path", "").encode()).hexdigest(),
+                              "stat": stat_only, "st": st})
             await reply(st, b)
             return
         if not allowed_request(m.get("m"), m.get("p")):
@@ -364,6 +392,15 @@ class PairingServer:
         if gone:
             remove_session_attachments(self._attach_root, gone.group(1))  # a deleted session takes its saved files along
         await reply(status, text)
+
+    def _log_output(self, rec: dict) -> None:
+        try:
+            self._output_log.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self._output_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        except OSError:
+            pass  # a log never breaks a preview
 
     async def _session_for(self, sid: str, query: str) -> dict | None:
         """The session as OpenCode has it, or None when it has no such session (or cannot say)."""

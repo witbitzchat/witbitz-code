@@ -31,6 +31,12 @@ type.
   for text-only confidential models are read through Tinfoil with your own key (`witbitz-code tinfoil-key`).
 - **Attachments are saved on your computer** (`~/.witbitz/code/attachments/<session>/`), where the agent reads them like
   any file. Design: [`docs/code-attachments.md`](docs/code-attachments.md).
+- **Files a reply produces are previewed in the app.** When the agent writes a PDF, a picture or a table, or names one in its
+  answer, the connector sends that file to your phone for a preview — only a regular file inside the session's own folder
+  (as OpenCode reports it), never a secret-looking name, never through a link that leads out, up to 20 MB. Each fetch is
+  logged as a digest in `~/.witbitz/code/output-log.jsonl`. Design: §8 of [`docs/code-attachments.md`](docs/code-attachments.md).
+- **Suggested tools.** The connector can tell the app which helper tools (like ffmpeg or PDF utilities) are on your
+  `PATH`, so the app can suggest the missing ones. It only looks; it installs nothing.
 
 Setup guide: **[witbitz.chat/docs/opencode.md](https://witbitz.chat/docs/opencode.md)**.
 The full design — wire format, key derivation, replay protection, the relay's limits — is
@@ -112,6 +118,8 @@ production.
 | `tools/code-opencode-policy.mjs` | the OpenCode config `serve` merges in: subagents' ask rules, and a refusal that does not end the turn |
 | `tools/code-confidential.mjs`, `agent/` | the confidential-model proxy, and the attestation and receipt verification it uses (TrustedRouter's gateway, Tinfoil) |
 | `tools/code-attachments.mjs`, `spaces/public/codeAttachments.js` | attachments saved on the computer for the agent to read |
+| `tools/code-outputs.mjs`, `spaces/public/codeOutputs.js` | files a reply produced: which ones, and the connector's checked route that serves one for the preview (`spaces/test/codeOutputs.vectors.json` holds the shared cases) |
+| `tools/code-tools-probe.mjs`, `spaces/public/codeTools.js` | which suggested tools are installed (a `PATH` lookup) |
 | `tools/opencode-config.mjs`, `tools/opencode-plugins/`, `tools/opencode-commands/` | writing an OpenCode config for TrustedRouter's models, and the project-notes plugin |
 | `spaces/public/downloads/witbitz-code.mjs` | the built single file (a test fails if it is stale) |
 | `spaces/public/code.sh` | the one-line installer: download, check against the app's manifest, run `setup` |
@@ -126,7 +134,7 @@ page itself, `opencodeApp.js`).
 
 ```bash
 npm ci
-npm test              # codec, connector, pairing, page transport, QR, Auto mode, subagent policy, confidential proxy, attachments, setup, installer, build freshness
+npm test              # codec, connector, pairing, page transport, QR, Auto mode, subagent policy, confidential proxy, attachments, produced-file previews, tool check, setup, installer, build freshness
 npm run test:relay    # the relay in the Workers runtime — installs miniflare for this run only (not a dependency: it
                       # carries advisories in sharp/undici, and nothing from it is in the built file)
 npm run test:python   # the Python package, including frames, flows and Auto decisions checked against the JavaScript modules

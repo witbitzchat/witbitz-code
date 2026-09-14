@@ -111,6 +111,7 @@ class FakeOpenCode:
         self.lock = threading.Lock()
         self.auto_events = auto_events or []
         self.auto_delay = auto_delay
+        self.session_dirs: dict[str, str] = {}  # session id → its folder, as GET /session/:id reports it (produced files)
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -148,6 +149,9 @@ class FakeOpenCode:
                 path = self.path.split("?")[0]
                 if path == "/agent":
                     return self._send(200, json.dumps([{"name": "build"}]))
+                parts = path.split("/")
+                if len(parts) == 3 and parts[1] == "session" and parts[2] in outer.session_dirs and self.command == "GET":
+                    return self._send(200, json.dumps({"id": parts[2], "directory": outer.session_dirs[parts[2]]}, ensure_ascii=False))
                 if path in LEAKY:  # a credential planted where OpenCode really puts one (spaces/test/leakyOpenCode.mjs)
                     return self._send(200, json.dumps(LEAKY[path]))
                 if path == "/session/ses_big/message":
