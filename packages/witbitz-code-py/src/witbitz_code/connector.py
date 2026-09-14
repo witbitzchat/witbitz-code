@@ -35,6 +35,7 @@ from .attachments import (ATTACHMENT_ROUTE, MAX_FILE_BYTES, attachment_rule, def
                           remove_session_attachments, serve_attachment, stage_message_body)
 from .auto_runner import AutoRunner
 from .outputs import OUTPUT_ROUTE, serve_output
+from .seen import SEEN_ROUTE, merge_seen, norm_seen
 from .pairings import DEFAULT_OPENCODE_URL, hostname, read_env_password
 from .relay import RELAY_URL, Connect, RelayPeer, allowed_event_path, allowed_request, project_response
 from .tools_probe import probe_tools
@@ -176,6 +177,8 @@ class PairingServer:
         safe_id = _js.utf16_slice(re.sub(r"[^A-Za-z0-9_-]", "_", _js.js_string(pairing.get("computerId") or "default")), 0, 64)
         auto_dir = Path(auto_dir) if auto_dir else default_auto_dir()
         self._output_log = auto_dir / "output-log.jsonl"  # each preview fetch: a digest of the path, never the path
+        self._seen_path = auto_dir / f"seen-{safe_id}.json"  # what the person has seen, shared by their devices (seen.py)
+        self._seen: dict | None = None
         self.auto = AutoRunner(base=self.base, auth=self._auth, client=client, poll_ms=auto_poll_ms, log=log,
                                state_path=auto_dir / f"auto-{safe_id}.json", log_path=auto_dir / "auto-log.jsonl",
                                on_verdict=lambda v: self.peer.send({"t": "autoverdict", **v, "ts": int(time.time() * 1000)}))
@@ -249,7 +252,7 @@ class PairingServer:
             return None  # no hello before this socket has its nonce
         # caps: what this connector can do beyond the requests — a page shows the Auto switch only when `auto` is here.
         return self.peer.send({"t": "hello", "ver": VERSION, "name": self.name, "computerId": self.pairing.get("computerId") or "",
-                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto", "attachments", "outputs"], "auto": self.auto.sessions()})
+                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto", "attachments", "outputs", "tools", "seen"], "auto": self.auto.sessions()})
 
     def _auth(self) -> dict:
         pw = self.pairing.get("password") or read_env_password(Path(self.pairing["envFile"]) if self.pairing.get("envFile") else None)
@@ -328,6 +331,29 @@ class PairingServer:
                               "stat": stat_only, "st": st})
             await reply(st, b)
             return
+        # What the person has seen, shared by their devices (seen.py): answered HERE and kept on this computer.
+        if bare == SEEN_ROUTE and m.get("m") in ("GET", "POST"):
+            if m.get("m") == "GET":
+                await reply(200, self._seen_record())
+                return
+            body = m.get("b")
+            if not isinstance(body, str) or _js.utf16_len(body) > 1_000_000:
+                await reply(413, {"error": "a seen record is at most 1 MB"})
+                return
+            try:
+                incoming = json.loads(body)
+            except ValueError:
+                incoming = None
+            if not isinstance(incoming, dict):
+                await reply(400, {"error": "not a seen record"})
+                return
+            current = self._seen_record()
+            merged = merge_seen(current, norm_seen(incoming))
+            if merged is not current:
+                self._seen = merged
+                self._save_seen()
+            await reply(200, merged)
+            return
         if not allowed_request(m.get("m"), m.get("p")):
             await reply(403, {"error": "not allowed by the connector"})
             return
@@ -392,6 +418,25 @@ class PairingServer:
         if gone:
             remove_session_attachments(self._attach_root, gone.group(1))  # a deleted session takes its saved files along
         await reply(status, text)
+
+    def _seen_record(self) -> dict:
+        if self._seen is None:
+            try:
+                self._seen = norm_seen(json.loads(self._seen_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                self._seen = norm_seen(None)
+        return self._seen
+
+    def _save_seen(self) -> None:
+        try:
+            self._seen_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._seen_path.with_name(self._seen_path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(_js.stringify(self._seen))
+            os.replace(tmp, self._seen_path)
+        except OSError as e:
+            self._log(f"witbitz-code: {self.name} · could not keep what was seen ({e})")
 
     def _log_output(self, rec: dict) -> None:
         try:

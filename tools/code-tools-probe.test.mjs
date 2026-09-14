@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { probeTools, searchDirs } from './code-tools-probe.mjs'
-import { TOOLS, normToolsReport, missingTools, setupPrompt, planSetup } from '../spaces/public/codeTools.js'
+import { TOOLS, normToolsReport, missingTools, setupPrompt, planSetup, setupAskedIds } from '../spaces/public/codeTools.js'
 
 const fsWith = (paths) => { const set = new Set(paths); return (p) => set.has(p) }
 
@@ -74,4 +74,25 @@ test('on apt/dnf/pacman, packaged tools become one sudo line for the person; the
   assert.match(p, /Do not use apt/)
   assert.match(p, /~\/\.local\/bin/)
   assert.doesNotMatch(p, /apt package/, 'no hint that leads to sudo')
+})
+
+// The update card (spaces/public/codeUpdate.js) calls a computer out of date when its hello lacks one of CONNECTOR_CAPS — so
+// the list must be exactly what BOTH connectors announce, or every current computer is told to update (or none ever is).
+test('the page expects exactly the capabilities both connectors announce', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { CONNECTOR_CAPS } = await import('../spaces/public/codeUpdate.js')
+  const js = readFileSync(new URL('./opencode-connector.mjs', import.meta.url), 'utf8').match(/^const CAPS = (\[[^\]]*\])/m)
+  const py = readFileSync(new URL('../packages/witbitz-code-py/src/witbitz_code/connector.py', import.meta.url), 'utf8').match(/"caps": (\[[^\]]*\])/)
+  assert.ok(js && py, 'both connectors still spell their caps where this test looks')
+  assert.deepEqual(JSON.parse(js[1].replace(/'/g, '"')), CONNECTOR_CAPS, 'tools/opencode-connector.mjs')
+  assert.deepEqual(JSON.parse(py[1]), CONNECTOR_CAPS, 'witbitz_code/connector.py')
+})
+
+// "it should autohide" (the owner): a setup session is archived once every tool it was asked for is there — and any device
+// can tell which tools those were, from the session's own first message.
+test('the tools a setup session was asked for read back from its prompt — and nothing mentioned in passing', () => {
+  const p = setupPrompt({ ids: ['ffmpeg', 'whisper', 'imagemagick'], platform: { os: 'linux', pm: 'apt' } })
+  assert.deepEqual(setupAskedIds(p), ['ffmpeg', 'whisper', 'imagemagick'])
+  assert.deepEqual(setupAskedIds('please also install Pandoc and - Git later'), [], 'only the prompt\'s own list lines')
+  assert.deepEqual(setupAskedIds(''), [])
 })

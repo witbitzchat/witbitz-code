@@ -3,8 +3,10 @@
 // The owner, after an agent fixed a PDF and — asked to "upload it here" — answered that a PDF cannot be shown in the chat:
 // "I think the user should automatically see a preview". Its answer had named the file's full path all along.
 //
-// A result is a file the reply WROTE or EDITED (its write/edit tools), or one its answer NAMES — never one it only read,
-// never a path in your own prompt. Only kinds a phone can show preview (a PDF's first page, a picture, the first lines of
+// A result is a file the reply WROTE or EDITED (its write/edit tools), or one its ANSWER names — the text after its last
+// step, not the narration between steps (the owner's "something went wrong": notes about a test in /tmp named min.html
+// and min.pdf, which read as files in the session folder, while the answer's `דוח מסכם.pdf` was taken for a command
+// because it has a space) — never one it only read, never a path in your own prompt. Only kinds a phone can show preview (a PDF's first page, a picture, the first lines of
 // a table or a text); office files, archives and media get a chip with Download; code gets nothing (its diff is in the
 // steps). Only inside the session's folder — the connector serves nothing else (tools/code-outputs.mjs) — and never a
 // name that looks like a secret. Pure: no DOM, no fs — the page and the JS connector import it; the Python connector
@@ -75,6 +77,9 @@ function normalize(p) {
 const EXT_ALT = Object.keys(KINDS).join('|')
 const BARE = new RegExp(`(?:^|[\\s(\\[<"'«])((?:\\.{1,2}\\/|\\/)?[^\\s\`'"()<>\\[\\]«»]+\\.(?:${EXT_ALT}))(?=$|[\\s)\\]>"'».,;:!?])`, 'giu')
 
+// What a command in backticks has and a file name does not: a flag, a pipe or redirect, &&, ;, $, =, a glob.
+const COMMANDISH = /(?:^|\s)--?[A-Za-z]|[|&;<>$=*]/
+
 const escapeRe = (x) => x.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
 /** Candidate paths an answer names: whole `code spans`; then, outside them, paths under the session's folder written out
  *  in full — matched from the folder itself, because a folder name with a space ("תיקייה 1") would otherwise be cut at the
@@ -101,7 +106,7 @@ export function replyOutputs(messages, { directory = '' } = {}) {
   const out = []
   const take = (raw, source, { spaced = false } = {}) => {
     if (out.length >= MAX_OUTPUTS || typeof raw !== 'string' || !raw || raw.includes('://') || raw.startsWith('~')) return
-    if (!raw.startsWith('/') && spaced && /\s/.test(raw)) return // a command in backticks, not a relative path
+    if (!raw.startsWith('/') && spaced && /\s/.test(raw) && COMMANDISH.test(raw)) return // a command in backticks, not a relative path
     const abs = normalize(raw.startsWith('/') ? raw : `${dir}/${raw}`)
     if (!abs || !validOutputPath(abs) || !abs.startsWith(dir + '/') || seen.has(abs)) return
     const kind = outputKind(abs)
@@ -116,7 +121,8 @@ export function replyOutputs(messages, { directory = '' } = {}) {
       take(p.state.input && p.state.input.filePath, 'wrote')
     }
   }
-  for (const p of parts) {
+  const lastStep = parts.map((p) => !!p && p.type === 'tool').lastIndexOf(true)
+  for (const p of parts.slice(lastStep + 1)) {
     if (p && p.type === 'text' && !p.synthetic) for (const c of namedIn(p.text, dir)) take(c.raw, 'named', c)
   }
   return out

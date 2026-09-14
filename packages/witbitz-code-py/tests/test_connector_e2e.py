@@ -174,7 +174,7 @@ async def conformance(rig: Rig, connector) -> None:
         await client.start()
         hello = client.hellos()[-1]
         assert set(hello) == {"t", "ver", "name", "computerId", "k", "ts", "caps", "auto"} and hello["ver"] == "1"
-        assert (hello["caps"], hello["auto"]) == (["auto", "attachments", "outputs"], []), "both connectors do Auto mode (test_auto.py), save attachments and serve produced files"
+        assert (hello["caps"], hello["auto"]) == (["auto", "attachments", "outputs", "tools", "seen"], []), "both connectors do Auto mode (test_auto.py), save attachments, serve produced files and share what was seen"
         assert (hello["name"], hello["computerId"]) == ("test-box", "cmp_test") and isinstance(hello["ts"], int)
         assert re.fullmatch(r"[A-Za-z0-9_-]{24}", hello["k"]), "18 random bytes, base64url"
 
@@ -311,6 +311,18 @@ async def conformance(rig: Rig, connector) -> None:
         assert (await client.call("GET", f"/witbitz/output?session=ses_nope&path={urllib.parse.quote(str(pdf), safe='')}"))["st"] == 404
         assert any(h.get("url") == "/session/ses_out?directory=%2Fclaimed" for h in rig.oc.seen_copy()), "looked up in the page's project"
         assert not any(h.get("url", "").startswith("/witbitz") for h in rig.oc.seen_copy()), "OpenCode never sees the route"
+
+        # SEEN (spaces/public/codeUnread.js — the owner: "When I switch devices I get green dots"): the computer keeps what the
+        # person has seen; each device posts its record and takes the merge back — the later look wins, junk ids are dropped.
+        seen = await client.call("GET", "/witbitz/seen")
+        assert seen["st"] == 200 and json.loads(seen["b"]) == {"since": 0, "at": {}}
+        phone = await client.call("POST", "/witbitz/seen", {"since": 5000, "at": {"ses_a": 9000, "ses_b": 7000}})
+        assert phone["b"] == '{"since":5000,"at":{"ses_a":9000,"ses_b":7000}}', phone["b"]
+        laptop = await client.call("POST", "/witbitz/seen", {"since": 3000, "at": {"ses_b": 8000.0, "ses_c": 6000, "../evil": 1}})
+        assert laptop["b"] == '{"since":3000,"at":{"ses_a":9000,"ses_b":8000,"ses_c":6000}}', laptop["b"]
+        assert (await client.call("POST", "/witbitz/seen", "not an object"))["st"] == 400
+        assert (await client.call("PUT", "/witbitz/seen", {}))["st"] == 403
+        assert json.loads((await client.call("GET", "/witbitz/seen"))["b"]) == {"since": 3000, "at": {"ses_a": 9000, "ses_b": 8000, "ses_c": 6000}}
     finally:
         await client.peer.aclose()
         await connector.stop()

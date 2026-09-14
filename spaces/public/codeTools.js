@@ -75,6 +75,16 @@ export function normToolsReport(m) {
 /** The tools a report says are missing, in catalog order. A tool the report does not mention is not called missing. */
 export const missingTools = (report) => (report ? TOOLS.filter((t) => report.tools[t.id] === false) : [])
 
+/** The setup session's title — how every device knows one when it sees it in the list. */
+export const SETUP_TITLE = 'Set up this computer'
+
+/** The tools a setup session was asked to install, read back from its first message (setupPrompt's "- <label> (" lines).
+ *  Read from the session itself, so any device can tell when its work is done. */
+export function setupAskedIds(text) {
+  const lines = String(text || '').split('\n')
+  return TOOLS.filter((t) => lines.some((l) => l.startsWith(`- ${t.label} (`))).map((t) => t.id)
+}
+
 /** The first message of the setup session. It asks — the approval cards are the real guard, but the agent is told so too. */
 export function setupPrompt({ ids, platform }) {
   const chosen = TOOLS.filter((t) => ids.includes(t.id))

@@ -37,6 +37,21 @@ test('a path written WITHOUT backticks in a folder whose name has a space is fou
   ])
 })
 
+test('the measured miss: a file named in the ANSWER with a space in backticks is found; names in the narration between steps are not', () => {
+  // The owner's "something went wrong": the answer said the report was written to `דוח מסכם.pdf` (made with cp — no
+  // write tool), and the cards showed min.html and min.pdf — a test in /tmp the narration mentioned — "not on the computer".
+  const dir = '/home/u/תיקייה 2'
+  const msgs = reply(
+    tool('bash', ''),
+    text('Without the @font-face, it\'s 1 page and no blank. The min.html has no @font-face — let me check the min.pdf text.'),
+    tool('bash', ''),
+    text('Done. The report is written to the PDF.\n\nנכתב לקובץ `דוח מסכם.pdf` בתיקייה.'),
+  )
+  assert.deepEqual(replyOutputs(msgs, { directory: dir }), [{ path: `${dir}/דוח מסכם.pdf`, kind: 'pdf', source: 'named' }])
+  const commands = reply(text('Run `soffice --convert-to pdf a.pdf`, `cd out && ls b.pdf`, `cat x.csv | head`, `OUT=c.pdf make` or `rm *.png`.'))
+  assert.deepEqual(replyOutputs(commands, { directory: dir }), [], 'a command in backticks is still not a file')
+})
+
 test('files the turn wrote or edited come first; a named relative path resolves in the session folder; each file once', () => {
   const msgs = reply(
     tool('write', `${DIR}/out/report.pdf`),

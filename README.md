@@ -35,6 +35,8 @@ type.
   answer, the connector sends that file to your phone for a preview — only a regular file inside the session's own folder
   (as OpenCode reports it), never a secret-looking name, never through a link that leads out, up to 20 MB. Each fetch is
   logged as a digest in `~/.witbitz/code/output-log.jsonl`. Design: §8 of [`docs/code-attachments.md`](docs/code-attachments.md).
+- **What you have read is shared between your devices.** The connector keeps a small record of which sessions you have
+  seen — session ids and times, no content — so a session read on your phone does not show as new on your laptop.
 - **Suggested tools.** The connector can tell the app which helper tools (like ffmpeg or PDF utilities) are on your
   `PATH`, so the app can suggest the missing ones. It only looks; it installs nothing.
 
@@ -120,6 +122,7 @@ production.
 | `tools/code-attachments.mjs`, `spaces/public/codeAttachments.js` | attachments saved on the computer for the agent to read |
 | `tools/code-outputs.mjs`, `spaces/public/codeOutputs.js` | files a reply produced: which ones, and the connector's checked route that serves one for the preview (`spaces/test/codeOutputs.vectors.json` holds the shared cases) |
 | `tools/code-tools-probe.mjs`, `spaces/public/codeTools.js` | which suggested tools are installed (a `PATH` lookup) |
+| `spaces/public/codeUnread.js` | which sessions have activity you have not seen, and the record the connector keeps so your devices agree |
 | `tools/opencode-config.mjs`, `tools/opencode-plugins/`, `tools/opencode-commands/` | writing an OpenCode config for TrustedRouter's models, and the project-notes plugin |
 | `spaces/public/downloads/witbitz-code.mjs` | the built single file (a test fails if it is stale) |
 | `spaces/public/code.sh` | the one-line installer: download, check against the app's manifest, run `setup` |
@@ -134,7 +137,7 @@ page itself, `opencodeApp.js`).
 
 ```bash
 npm ci
-npm test              # codec, connector, pairing, page transport, QR, Auto mode, subagent policy, confidential proxy, attachments, produced-file previews, tool check, setup, installer, build freshness
+npm test              # codec, connector, pairing, page transport, QR, Auto mode, subagent policy, confidential proxy, attachments, produced-file previews, tool check, seen sessions, setup, installer, build freshness
 npm run test:relay    # the relay in the Workers runtime — installs miniflare for this run only (not a dependency: it
                       # carries advisories in sharp/undici, and nothing from it is in the built file)
 npm run test:python   # the Python package, including frames, flows and Auto decisions checked against the JavaScript modules

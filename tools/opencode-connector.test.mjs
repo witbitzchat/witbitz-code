@@ -79,7 +79,7 @@ async function rig(t, { opencodeUrl, connectorOptions = {} } = {}) {
     assert.ok(await until(() => got.some((x) => x.t === 'res' && x.id === id)), `a response to ${m} ${p}`)
     return got.find((x) => x.t === 'res' && x.id === id)
   }
-  return { relay, oc, secret, client, got, call, connector, nonce, restart: async () => { connector.stop(); await new Promise((r) => setTimeout(r, 100)) ; const c2 = await startConnector({ pairings: [{ name: 'test-box', computerId: 'cmp_test', secret, relay: relay.url(), opencodeUrl: opencodeUrl || oc.url, password: PASSWORD }], flushMs: 40, log: () => {} }); t.after(() => c2.stop()); return c2 } }
+  return { relay, oc, secret, client, got, call, connector, nonce, restart: async () => { connector.stop(); await new Promise((r) => setTimeout(r, 100)) ; const c2 = await startConnector({ pairings: [{ name: 'test-box', computerId: 'cmp_test', secret, relay: relay.url(), opencodeUrl: opencodeUrl || oc.url, password: PASSWORD }], flushMs: 40, log: () => {}, notesPluginPath: '/nonexistent/witbitz-notes.js', ...connectorOptions }); t.after(() => c2.stop()); return c2 } }
 }
 
 test('watchParent: a re-parented connector stops itself (its supervisor was killed with -9, so no trap ran)', async () => {
@@ -390,6 +390,35 @@ test('ATTACHMENTS: a file over the limit refuses the turn with a reason, and Ope
   assert.equal(r.st, 413)
   assert.match(JSON.parse(r.b).error, /notes\.txt is over/)
   assert.equal(oc.seen.some((s) => s.url.startsWith('/session/ses_1/message')), false)
+})
+
+// ── what the person has seen, shared between their devices (spaces/public/codeUnread.js SEEN_ROUTE) ──────────────────
+// The owner: "When I switch devices I get green dots" — the record of what you had seen lived on each device. The computer
+// keeps one too; every device posts its own and takes the merge back.
+test('SEEN: the computer keeps what the person has seen, merged across devices, on disk — and says so in its hello', async (t) => {
+  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const autoDir = mkdtempSync(join(tmpdir(), 'wb-conn-seen-'))
+  const { call, got, restart } = await rig(t, { connectorOptions: { autoDir } })
+  assert.ok(got.filter((m) => m.t === 'hello').at(-1).caps.includes('seen'), 'the page learns it can share what was seen')
+  let r = await call('GET', '/witbitz/seen')
+  assert.equal(r.st, 200)
+  assert.deepEqual(JSON.parse(r.b), { since: 0, at: {} }, 'nothing seen yet')
+  r = await call('POST', '/witbitz/seen', { since: 5000, at: { ses_a: 9000, ses_b: 7000 } }) // the phone
+  assert.deepEqual(JSON.parse(r.b), { since: 5000, at: { ses_a: 9000, ses_b: 7000 } })
+  r = await call('POST', '/witbitz/seen', { since: 3000, at: { ses_b: 8000, ses_c: 6000, '../evil': 1 } }) // the laptop
+  assert.deepEqual(JSON.parse(r.b), { since: 3000, at: { ses_a: 9000, ses_b: 8000, ses_c: 6000 } }, 'the merge comes back — later looks win, junk ids are dropped')
+  const file = join(autoDir, 'seen-cmp_test.json')
+  assert.ok(existsSync(file), 'kept per pairing, beside Auto\'s state')
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { since: 3000, at: { ses_a: 9000, ses_b: 8000, ses_c: 6000 } })
+  assert.equal((await import('node:fs')).statSync(file).mode & 0o777, 0o600)
+  assert.equal((await call('POST', '/witbitz/seen', 'not an object')).st, 400)
+  assert.equal((await call('PUT', '/witbitz/seen', {})).st, 403, 'only GET and POST — anything else is not on the list')
+  const hellos = got.filter((m) => m.t === 'hello').length
+  await restart()
+  assert.ok(await until(() => got.filter((m) => m.t === 'hello').length > hellos), 'the restarted connector says hello')
+  assert.deepEqual(JSON.parse((await call('GET', '/witbitz/seen')).b), { since: 3000, at: { ses_a: 9000, ses_b: 8000, ses_c: 6000 } }, 'it survives a restart')
 })
 
 // ── project notes (tools/opencode-plugins/witbitz-notes.js) ─────────────────────────────────────────────────────────
