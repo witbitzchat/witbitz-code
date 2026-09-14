@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { probeTools, searchDirs } from './code-tools-probe.mjs'
-import { TOOLS, normToolsReport, missingTools, setupPrompt } from '../spaces/public/codeTools.js'
+import { TOOLS, normToolsReport, missingTools, setupPrompt, planSetup } from '../spaces/public/codeTools.js'
 
 const fsWith = (paths) => { const set = new Set(paths); return (p) => set.has(p) }
 
@@ -47,13 +47,31 @@ test('a report from the computer is trusted only for known tools, booleans, and 
   assert.equal(normToolsReport({ t: 'tools' }), null)
 })
 
-test('the setup prompt names the ticked tools with package hints, and says every command asks', () => {
-  const p = setupPrompt({ ids: ['ffmpeg', 'whisper'], platform: { os: 'linux', pm: 'apt' } })
-  assert.match(p, /ffmpeg \(`ffmpeg`\).*apt package `ffmpeg`/)
-  assert.match(p, /Whisper .*no apt package.*uv tool install openai-whisper/)
-  assert.doesNotMatch(p, /Pandoc|qpdf/, 'only what was ticked')
-  assert.match(p, /runs Linux and has apt/)
+test('the setup prompt names the tools with package hints where the package manager needs no sudo', () => {
+  const p = setupPrompt({ ids: ['ffmpeg', 'whisper'], platform: { os: 'darwin', pm: 'brew' } })
+  assert.match(p, /ffmpeg \(`ffmpeg`\).*brew package `ffmpeg`/)
+  assert.match(p, /Whisper .*brew package `whisper-cpp`/)
+  assert.doesNotMatch(p, /Pandoc|qpdf/, 'only what was chosen')
+  assert.match(p, /runs macOS and has brew/)
+  assert.match(p, /Prefer brew/)
+  assert.match(p, /Never run sudo/)
   assert.match(p, /ask me for approval/)
   assert.match(p, /Do not change anything else/)
   assert.match(setupPrompt({ ids: ['git'], platform: { os: '', pm: '' } }), /this computer's OS/)
+})
+
+// The owner, with a setup session that skipped ripgrep, qpdf and Pandoc on `sudo: a password is required`: "And the
+// install needs sudo". Admin packages are ONE line for the person; the agent gets only what needs no sudo.
+test('on apt/dnf/pacman, packaged tools become one sudo line for the person; the rest go to the agent', () => {
+  const apt = planSetup(['ripgrep', 'whisper', 'qpdf', 'pandoc'], { os: 'linux', pm: 'apt' })
+  assert.deepEqual(apt, { adminIds: ['ripgrep', 'qpdf', 'pandoc'], agentIds: ['whisper'], adminCommand: 'sudo apt-get update && sudo apt-get install -y ripgrep qpdf pandoc' })
+  assert.equal(planSetup(['tesseract', 'poppler'], { os: 'linux', pm: 'apt' }).adminCommand, 'sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr', 'the package names, in catalog order')
+  assert.equal(planSetup(['ffmpeg'], { os: 'linux', pm: 'pacman' }).adminCommand, 'sudo pacman -S --needed --noconfirm ffmpeg')
+  assert.deepEqual(planSetup(['ffmpeg', 'whisper'], { os: 'darwin', pm: 'brew' }), { adminIds: [], agentIds: ['ffmpeg', 'whisper'], adminCommand: '' }, 'Homebrew needs no sudo: all the agent\'s')
+  assert.deepEqual(planSetup(['ffmpeg'], { os: 'linux', pm: '' }), { adminIds: [], agentIds: ['ffmpeg'], adminCommand: '' }, 'no package manager found: the agent finds a way')
+  const p = setupPrompt({ ids: apt.agentIds, platform: { os: 'linux', pm: 'apt' } })
+  assert.match(p, /never run sudo — it cannot ask for my password here/)
+  assert.match(p, /Do not use apt/)
+  assert.match(p, /~\/\.local\/bin/)
+  assert.doesNotMatch(p, /apt package/, 'no hint that leads to sudo')
 })

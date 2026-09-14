@@ -34,6 +34,32 @@ export const PACKAGE_MANAGERS = {
 
 const OS_NAME = { darwin: 'macOS', linux: 'Linux', win32: 'Windows' }
 
+// ★ SUDO CANNOT ASK FOR A PASSWORD HERE. The agent's commands have no terminal: a setup session asked `sudo apt-get
+//   install`, failed, and skipped ripgrep, qpdf and Pandoc (the owner: "And the install needs sudo"). So a package manager
+//   that needs admin rights is not the agent's job: its packages become ONE line the person runs in a terminal, and the
+//   agent installs only what needs no sudo (Homebrew, winget, scoop, uv, a release binary in ~/.local/bin).
+export const ADMIN_PMS = new Set(['apt', 'dnf', 'pacman', 'zypper', 'apk'])
+const ADMIN_LINE = {
+  apt: (pkgs) => `sudo apt-get update && sudo apt-get install -y ${pkgs}`,
+  dnf: (pkgs) => `sudo dnf install -y ${pkgs}`,
+  pacman: (pkgs) => `sudo pacman -S --needed --noconfirm ${pkgs}`,
+  zypper: (pkgs) => `sudo zypper install -y ${pkgs}`,
+  apk: (pkgs) => `sudo apk add ${pkgs}`,
+}
+
+/** Split the chosen tools: those a system package needing admin rights covers (→ one command for the person), and the
+ *  rest (→ the agent). `adminCommand` is '' when there are none. */
+export function planSetup(ids, platform) {
+  const pm = (platform && platform.pm) || ''
+  const adminIds = [], agentIds = [], pkgs = []
+  for (const t of TOOLS) {
+    if (!ids.includes(t.id)) continue
+    const pkg = t.pkg[pm]
+    if (ADMIN_PMS.has(pm) && pkg) { adminIds.push(t.id); pkgs.push(pkg) } else agentIds.push(t.id)
+  }
+  return { adminIds, agentIds, adminCommand: pkgs.length ? ADMIN_LINE[pm](pkgs.join(' ')) : '' }
+}
+
 /** A connector's `{t:'tools'}` answer → a well-formed one: known tool ids with booleans, an OS and a package manager
  *  from the lists above ('' otherwise). Everything else the message carries is dropped. */
 export function normToolsReport(m) {
@@ -57,8 +83,11 @@ export function setupPrompt({ ids, platform }) {
   const lines = chosen.map((t) => {
     const pkg = pm && t.pkg[pm] !== undefined ? t.pkg[pm] : undefined
     const hint = pkg ? `${pm} package \`${pkg}\`` : pkg === '' ? `no ${pm} package` : ''
-    return `- ${t.label} (${t.bins.map((b) => '`' + b + '`').join(' or ')}) — ${t.why}${hint ? `. Hint: ${hint}` : ''}${t.note ? `; ${t.note}` : ''}`
+    return `- ${t.label} (${t.bins.map((b) => '`' + b + '`').join(' or ')}) — ${t.why}${hint && !ADMIN_PMS.has(pm) ? `. Hint: ${hint}` : ''}${t.note ? `; ${t.note}` : ''}`
   })
+  const noSudo = ADMIN_PMS.has(pm)
+    ? `Do not use ${pm} and never run sudo — it cannot ask for my password here, so it only fails. Install without admin rights instead: \`uv tool install\` or pipx for Python tools, or the tool's official release binary into ~/.local/bin (check that folder is on PATH). If a tool can only be installed with admin rights, do not try: give me the exact command at the end.`
+    : `Never run sudo — it cannot ask for my password here${pm ? `; ${pm} does not need it` : ''}.`
   return [
     `Set up this computer for coding work. Install these tools, which are missing here:`,
     '',
@@ -66,8 +95,10 @@ export function setupPrompt({ ids, platform }) {
     '',
     `The computer runs ${os}${pm ? ` and has ${pm}` : ''}. Work through them one at a time:`,
     `1. Check it really is missing (\`command -v\`, or \`where\` on Windows) — skip it if it is already there.`,
-    `2. Say the exact command you will run and why, then run it. Prefer the system package manager; use sudo only when the command needs it.`,
+    `2. Say the exact command you will run and why, then run it.${pm && !ADMIN_PMS.has(pm) ? ` Prefer ${pm}.` : ''}`,
     `3. Confirm it works (for example \`--version\`).`,
+    '',
+    noSudo,
     '',
     `Every command will ask me for approval first. Do not change anything else on the computer. If a tool cannot be installed here, say so and move on. End with a short list: installed, already there, skipped (and why).`,
   ].join('\n')

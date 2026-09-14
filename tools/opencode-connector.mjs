@@ -79,10 +79,10 @@ function sseReader(onData) {
  * Serve the given pairings. Returns { stop, peers } — `peers` is one RelayPeer per pairing.
  * Options exist for tests: fetchImpl, WebSocketImpl, flushMs, log.
  */
-export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, notesConfidentialList = WitbitzNotes.helpers.CONFIDENTIAL_LIST, toolsProbe = probeTools } = {}) {
+export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, toolsProbe = probeTools } = {}) {
   const running = []
   try { const n = pruneAttachments(attachRoot); if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`) } catch { /* no folder yet */ }
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList, toolsProbe }))
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe }))
   return {
     peers: running.map((r) => r.peer),
     /** What the confidential-model proxy is doing for a session (code-confidential.mjs onProgress), to the phones. */
@@ -102,7 +102,7 @@ function tinfoilReaderForKey() {
   return reader
 }
 
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList, toolsProbe }) {
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe }) {
   const name = pairing.name || hostname()
   const base = String(pairing.opencodeUrl || 'http://127.0.0.1:4096').replace(/\/+$/, '')
   const password = () => pairing.password || parseEnvPassword(existsSync(pairing.envFile || DEFAULT_ENV) ? readFileSync(pairing.envFile || DEFAULT_ENV, 'utf8') : '')
@@ -181,11 +181,10 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     let body = typeof m.b === 'string' ? m.b : undefined
     const turnOf = m.m === 'POST' && /^\/session\/([^/]+)\/message$/.exec(path)
     // PROJECT NOTES (tools/opencode-plugins/witbitz-notes.js), every turn, only where the plugin is installed: reads of ITS
-    // project's notes folder and a regular model's writes into notes/ ask nothing — one note used to cost FOUR approvals (external_directory +
-    // edit, for the note and its INDEX.md; measured 2026-09-14) and a model that writes notes reluctantly gave up. The
-    // confidential/ folder follows the TURN's model: open for a confidential one, closed (ask) for any other, so a regular
-    // model still cannot read confidential notes unasked. AGENTS.md — injected as INSTRUCTIONS — still asks for every edit.
-    if (turnOf && existsSync(notesPluginPath)) await ruleNotes(turnOf[1], query, body)
+    // project's notes folder and writes into notes/ ask nothing, whatever the model — one note used to cost FOUR approvals
+    // (external_directory + edit, for the note and its INDEX.md; measured 2026-09-14) and a model that writes notes
+    // reluctantly gave up. AGENTS.md — injected as INSTRUCTIONS — still asks for every edit.
+    if (turnOf && existsSync(notesPluginPath)) await ruleNotes(turnOf[1], query)
     if (turnOf && body && body.includes('"file"')) {
       let parsed = null
       try { parsed = JSON.parse(body) } catch { /* OpenCode answers a malformed body itself */ }
@@ -266,7 +265,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     if (await addRules(sid, query, s, [attachmentRule(attachRoot, sid)], 'attachment')) ruled.add(sid) // this session's folder only
   }
   /** The notes rules for one turn (see handle). Appends only what does not already take effect — last match wins. */
-  async function ruleNotes(sid, query, body) {
+  async function ruleNotes(sid, query) {
     const s = await sessionFor(sid, query)
     const root = s && WitbitzNotes.helpers.rootFromSession(s)
     if (!root) return
@@ -275,24 +274,15 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     // session path is its directory without the leading "/".
     const plain = !!s.path && s.directory === '/' + s.path
     const rel = relative(plain ? '/' : resolve(root), dir)
-    let model = null
-    try { const b = body ? JSON.parse(body) : null; model = b && b.model && { providerID: b.model.providerID, id: b.model.modelID } } catch { /* OpenCode answers a malformed body itself */ }
-    const confidential = WitbitzNotes.helpers.isConfidential(model, notesConfidentialList)
-    const open = confidential ? 'allow' : 'ask'
     const want = [
       { permission: 'external_directory', pattern: `${dir}/*`, action: 'allow' },
-      // A confidential turn's notes belong in confidential/ ONLY: notes/ is injected into regular models, and asked for
-      // "project notes" the owner's DeepSeek session put infra details and security gaps there. A rule `deny` is not a
-      // person's refusal — the turn goes on and the model is shown the rule, so it saves in the right folder.
-      { permission: 'edit', pattern: `${rel}/notes/*`, action: confidential ? 'deny' : 'allow' },
-      { permission: 'external_directory', pattern: `${dir}/confidential/*`, action: open }, // AFTER the folder allow: last match wins
-      { permission: 'edit', pattern: `${rel}/confidential/*`, action: open },
+      // One notes folder for every model (the owner removed the confidential split, 2026-09-14). A session from before may
+      // still hold that version's `deny` on notes/ from a confidential turn — the allow is appended after it, and wins.
+      { permission: 'edit', pattern: `${rel}/notes/*`, action: 'allow' },
     ]
     const have = Array.isArray(s.permission) ? s.permission : []
     const effective = (rule) => { let a = null; for (const r of have) if (r && r.permission === rule.permission && r.pattern === rule.pattern) a = r.action; return a }
-    const folderMissing = effective(want[0]) !== 'allow'
-    // A re-added folder allow would land after the confidential rule and override it, so then that rule is re-added too.
-    const missing = want.filter((rule, i) => effective(rule) !== rule.action || (folderMissing && i === 2))
+    const missing = want.filter((rule) => effective(rule) !== rule.action)
     if (missing.length) await addRules(sid, query, s, missing, 'project notes', { always: true })
   }
   /** Append the rules the session does not have yet (PATCH appends — measured). True when they are in place. */

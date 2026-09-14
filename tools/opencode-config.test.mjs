@@ -62,27 +62,22 @@ test('the api key is a reference, never a literal', () => {
 // ── project notes (tools/opencode-plugins/witbitz-notes.js) ─────────────────────────────────────────────────────────
 // Measured (opencode 1.18.30, isolated server): plugins load from ~/.config/opencode/{plugin,plugins}/*.{ts,js}, commands
 // from {command,commands}/**/*.md; a config-level external_directory allow applies to a session WITHOUT our ruleset (the TUI).
-test('notes: the TUI may read the notes folder, and confidential notes still ask', async () => {
+test('notes: the TUI may read the notes folder — one folder, no confidential rule', async () => {
   const { buildConfig: build } = await import('./opencode-config.mjs')
   const c = build({ proxyPort: 4196, notesRoot: '/home/u/.local/share/witbitz-notes' })
-  assert.deepEqual(c.permission, { external_directory: { '/home/u/.local/share/witbitz-notes/**': 'allow', '/home/u/.local/share/witbitz-notes/*/confidential/**': 'ask' } })
-  assert.deepEqual(Object.keys(c.permission.external_directory).at(-1), '/home/u/.local/share/witbitz-notes/*/confidential/**', 'the ask comes last — the last matching rule wins')
+  assert.deepEqual(c.permission, { external_directory: { '/home/u/.local/share/witbitz-notes/**': 'allow' } })
 })
 
-test('notes: installing puts the plugin and /notes-init where OpenCode loads them, and lists the confidential models', async () => {
-  const { installNotes, confidentialModelIds } = await import('./opencode-config.mjs')
-  const { mkdtempSync, readFileSync, existsSync } = await import('node:fs')
+test('notes: installing puts the plugin and /notes-init where OpenCode loads them — and removes the old confidential-model list', async () => {
+  const { installNotes } = await import('./opencode-config.mjs')
+  const { mkdtempSync, readFileSync, existsSync, writeFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const dir = mkdtempSync(join(tmpdir(), 'wb-occfg-'))
+  writeFileSync(join(dir, 'witbitz-confidential-models.json'), '["trustedrouter/x"]\n') // what an earlier version installed
   installNotes({ configDir: dir, proxyPort: 4196 })
   assert.ok(readFileSync(join(dir, 'plugins', 'witbitz-notes.js'), 'utf8').includes('export const WitbitzNotes'))
   assert.match(readFileSync(join(dir, 'commands', 'notes-init.md'), 'utf8'), /^---\ndescription:/)
-  const listed = JSON.parse(readFileSync(join(dir, 'witbitz-confidential-models.json'), 'utf8'))
-  assert.deepEqual(listed, confidentialModelIds({ proxyPort: 4196 }))
-  assert.ok(listed.length > 0 && listed.every((id) => id.startsWith('trustedrouter/')))
-  assert.deepEqual(confidentialModelIds({ proxyPort: 0 }), [], 'without the proxy nothing is confidential — the label is not a claim')
-  installNotes({ configDir: join(dir, 'again'), proxyPort: 0 })
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'again', 'witbitz-confidential-models.json'), 'utf8')), [])
+  assert.equal(existsSync(join(dir, 'witbitz-confidential-models.json')), false, 'only the notes read it, and the split is gone')
   assert.equal(existsSync(join(dir, 'plugins', 'witbitz-notes.test.mjs')), false, 'only the plugin, never its tests')
 })

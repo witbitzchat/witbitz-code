@@ -394,61 +394,57 @@ test('ATTACHMENTS: a file over the limit refuses the turn with a reason, and Ope
 
 // ── project notes (tools/opencode-plugins/witbitz-notes.js) ─────────────────────────────────────────────────────────
 // Notes writes asked FOUR times per note (external_directory + edit, for the note and its INDEX.md) — measured 2026-09-14,
-// and a model that already writes notes reluctantly gave up. Now: writes into notes/ ask nothing; confidential/ follows the
-// TURN's model (allowed for a confidential model, asked for any other, so a regular model still cannot read confidential
-// notes unasked); AGENTS.md — injected as INSTRUCTIONS — still asks. The edit pattern is relative to the project's worktree:
-// the git root for a git project, "/" for a plain folder (measured: "../notes/notes/a.md" vs "tmp/…/notes/a.md").
+// and a model that already writes notes reluctantly gave up. Now: reads of the notes folder and writes into notes/ ask
+// nothing, whatever the model (the owner removed the confidential split, 2026-09-14); AGENTS.md — injected as
+// INSTRUCTIONS — still asks. The edit pattern is relative to the project's worktree: the git root for a git project, "/"
+// for a plain folder (measured: "../notes/notes/a.md" vs "tmp/…/notes/a.md").
 async function notesRig(t) {
   const { mkdtempSync, writeFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const dir = mkdtempSync(join(tmpdir(), 'wb-conn-notes-'))
   writeFileSync(join(dir, 'witbitz-notes.js'), '// installed')
-  writeFileSync(join(dir, 'confidential.json'), JSON.stringify(['trustedrouter/deepseek/deepseek-v4-flash']))
-  return rig(t, { connectorOptions: { notesRoot: '/n', notesPluginPath: join(dir, 'witbitz-notes.js'), notesConfidentialList: join(dir, 'confidential.json') } })
+  return rig(t, { connectorOptions: { notesRoot: '/n', notesPluginPath: join(dir, 'witbitz-notes.js') } })
 }
 const keyOf = async (root) => { const { createHash } = await import('node:crypto'); const b = root.split('/').pop(); return `${b}-${createHash('sha1').update(root).digest('hex').slice(0, 8)}` }
 const effective = (rules, permission, pattern) => { let a = null; for (const r of rules) if (r.permission === permission && r.pattern === pattern) a = r.action; return a }
 const CONF = { providerID: 'trustedrouter', modelID: 'deepseek/deepseek-v4-flash' }
 const PLAIN = { providerID: 'trustedrouter', modelID: 'x-ai/grok-4.6' }
 
-test('NOTES: writes into the project\'s notes folder ask nothing; confidential notes follow the turn\'s model; AGENTS.md still asks', async (t) => {
+test('NOTES: reads of the notes folder and writes into notes/ ask nothing, whatever the model; AGENTS.md still asks', async (t) => {
   const { call, oc } = await notesRig(t)
   const key = await keyOf('/home/u/repo')
   const rel = `../../../n/${key}` // from the git root /home/u/repo
   const rulesNow = async () => oc.rules.get('/session/ses_notes') || []
   await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: PLAIN, parts: [{ type: 'text', text: 'hi' }] })
-  let r = await rulesNow()
+  const r = await rulesNow()
   assert.equal(effective(r, 'external_directory', `/n/${key}/*`), 'allow', 'reads of the notes folder')
   assert.equal(effective(r, 'edit', `${rel}/notes/*`), 'allow', 'writes into notes/')
-  assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'ask', 'a regular model: confidential notes ask')
-  assert.equal(effective(r, 'edit', `${rel}/confidential/*`), 'ask')
-  assert.ok(!r.some((x) => x.permission === 'edit' && x.action === 'allow' && /AGENTS\.md|\/\*$/.test(x.pattern) && !/\/(notes|confidential)\/\*$/.test(x.pattern)), 'nothing allows AGENTS.md')
-  const patchesBefore = oc.seen.filter((s) => s.method === 'PATCH').length
-  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: PLAIN, parts: [{ type: 'text', text: 'again' }] })
-  assert.equal(oc.seen.filter((s) => s.method === 'PATCH').length, patchesBefore, 'nothing changed — nothing is sent')
-  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: CONF, parts: [{ type: 'text', text: 'confidential now' }] })
-  r = await rulesNow()
-  assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'allow', 'a confidential model: its notes ask nothing')
-  assert.equal(effective(r, 'edit', `${rel}/confidential/*`), 'allow')
-  // …and it cannot put them in notes/, which regular models read: the owner's Witbitz 1 did, when asked for "project notes"
-  assert.equal(effective(r, 'edit', `${rel}/notes/*`), 'deny', 'a confidential turn writes confidential/ only')
-  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: PLAIN, parts: [{ type: 'text', text: 'back to a regular model' }] })
-  r = await rulesNow()
-  assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'ask', 'closed again for a regular model')
-  assert.equal(effective(r, 'edit', `${rel}/confidential/*`), 'ask')
-  assert.equal(effective(r, 'edit', `${rel}/notes/*`), 'allow', 'and notes/ is its folder again')
-  const lastConfidentialRead = r.map((x) => x.pattern).lastIndexOf(`/n/${key}/confidential/*`)
-  assert.ok(lastConfidentialRead > r.map((x) => x.pattern).lastIndexOf(`/n/${key}/*`), 'the confidential rule stays AFTER the folder allow — last match wins')
+  assert.ok(!r.some((x) => /confidential/.test(x.pattern)), 'no confidential rules any more')
+  assert.ok(!r.some((x) => x.permission === 'edit' && x.action === 'allow' && /AGENTS\.md|\/\*$/.test(x.pattern) && !/\/notes\/\*$/.test(x.pattern)), 'nothing allows AGENTS.md')
+  const patches = () => oc.seen.filter((s) => s.method === 'PATCH').length
+  const before = patches()
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: CONF, parts: [{ type: 'text', text: 'another model' }] })
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { parts: [{ type: 'text', text: 'no model' }] })
+  assert.equal(patches(), before, 'the model makes no difference — nothing is sent again')
 })
 
-test('NOTES: a plain folder\'s edit rule is relative to "/", and a turn with no model keeps confidential notes closed', async (t) => {
+test('NOTES: a session still holding the old "confidential turn" deny on notes/ is allowed to write there again', async (t) => {
+  const { call, oc } = await notesRig(t)
+  const key = await keyOf('/home/u/repo')
+  const rel = `../../../n/${key}`
+  await call('PATCH', '/session/ses_notes?directory=%2Fhome%2Fu%2Frepo%2Fweb', { permission: [{ permission: 'external_directory', pattern: `/n/${key}/*`, action: 'allow' }, { permission: 'edit', pattern: `${rel}/notes/*`, action: 'deny' }] })
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: CONF, parts: [{ type: 'text', text: 'hi' }] })
+  assert.equal(effective(oc.rules.get('/session/ses_notes') || [], 'edit', `${rel}/notes/*`), 'allow')
+})
+
+test('NOTES: a plain folder\'s edit rule is relative to "/"', async (t) => {
   const { call, oc } = await notesRig(t)
   const key = await keyOf('/home/u/scratch')
   await call('POST', '/session/ses_plain/message?directory=%2Fhome%2Fu%2Fscratch', { parts: [{ type: 'text', text: 'hi' }] })
   const r = oc.rules.get('/session/ses_plain') || []
   assert.equal(effective(r, 'edit', `n/${key}/notes/*`), 'allow', 'relative to the worktree "/" — no leading slash')
-  assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'ask', 'unknown model → closed')
+  assert.equal(effective(r, 'external_directory', `/n/${key}/*`), 'allow')
 })
 
 test('NOTES: without the plugin installed the connector adds nothing', async (t) => {

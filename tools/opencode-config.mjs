@@ -29,7 +29,7 @@
 //     here would only make opencode send bytes that die; with it absent, the client reads the document with our own
 //     pdf.js and sends the text (spaces/public/pdfText.js), which works on all 18. Revisit if the section ever
 //     speaks /v1/messages, or when TR accepts the file part.
-import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -73,9 +73,9 @@ export function buildConfig({ proxyPort = 0, notesRoot = NOTES_ROOT } = {}) {
     // the catalog's confidential default is the cheap, fast, always-credentialled one — the right thing to land on
     model: `trustedrouter/${(fallback || CATALOG.find((m) => m.route === 'trustedrouter')).model}`,
     // Project notes (tools/opencode-plugins/witbitz-notes.js), for sessions WITHOUT the Code section's ruleset (the TUI):
-    // reading the notes folder asks nothing, confidential notes still ask — the last matching rule wins, so order matters.
+    // reading the notes folder asks nothing (one folder for every model — the confidential split is gone, 2026-09-14).
     // The Code section's sessions override this (measured) and get a per-session rule from the connector instead.
-    permission: { external_directory: { [`${notesRoot}/**`]: 'allow', [`${notesRoot}/*/confidential/**`]: 'ask' } },
+    permission: { external_directory: { [`${notesRoot}/**`]: 'allow' } },
     provider: {
       trustedrouter: {
         name: 'TrustedRouter',
@@ -86,18 +86,14 @@ export function buildConfig({ proxyPort = 0, notesRoot = NOTES_ROOT } = {}) {
   }
 }
 
-/** The models the connector's proxy enforces as confidential, as OpenCode names them — the notes plugin gives only these
- *  the confidential notes. Without the proxy nothing is confidential (the same rule as the "· confidential" label). */
-export const confidentialModelIds = ({ proxyPort = 0 } = {}) => (proxyPort ? CATALOG.filter((m) => m.route === 'trustedrouter' && m.tiers?.includes('confidential')).map((m) => `trustedrouter/${m.model}`) : [])
-
-/** Put the notes plugin and /notes-init where OpenCode loads them ({plugin,plugins}/*.js, {command,commands}/**.md), and
- *  the confidential-model list the plugin reads. */
-export function installNotes({ configDir = CONFIG_DIR, proxyPort = 0 } = {}) {
+/** Put the notes plugin and /notes-init where OpenCode loads them ({plugin,plugins}/*.js, {command,commands}/**.md). The
+ *  confidential-model list an earlier version installed for the notes is removed: the notes no longer split by model. */
+export function installNotes({ configDir = CONFIG_DIR } = {}) {
   mkdirSync(join(configDir, 'plugins'), { recursive: true })
   mkdirSync(join(configDir, 'commands'), { recursive: true })
   copyFileSync(join(HERE, 'opencode-plugins', 'witbitz-notes.js'), join(configDir, 'plugins', 'witbitz-notes.js'))
   copyFileSync(join(HERE, 'opencode-commands', 'notes-init.md'), join(configDir, 'commands', 'notes-init.md'))
-  writeFileSync(join(configDir, 'witbitz-confidential-models.json'), JSON.stringify(confidentialModelIds({ proxyPort }), null, 1) + '\n')
+  rmSync(join(configDir, 'witbitz-confidential-models.json'), { force: true })
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -108,7 +104,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   mkdirSync(dirname(OUT), { recursive: true })
   if (existsSync(OUT)) { copyFileSync(OUT, OUT + '.bak'); console.log(`kept ${OUT}.bak`) }
   writeFileSync(OUT, json + '\n')
-  installNotes({ proxyPort })
+  installNotes()
   console.log(`installed project notes: ${join(CONFIG_DIR, 'plugins', 'witbitz-notes.js')} + /notes-init (notes in ${NOTES_ROOT})`)
   console.log(`wrote ${OUT} — ${Object.keys(buildConfig({ proxyPort }).provider.trustedrouter.models).length} models${proxyPort ? `, TrustedRouter via the confidential-model proxy on 127.0.0.1:${proxyPort}` : ''}`)
   console.log('restart the server for it to take effect: it reads this file once, at boot')
