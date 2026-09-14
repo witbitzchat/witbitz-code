@@ -15298,6 +15298,57 @@ async function runSetup(d) {
   await d.serveHere(port);
   return result;
 }
+var shellStartupFiles = (home, env = {}) => {
+  const xdg = env.XDG_CONFIG_HOME || join7(home, ".config");
+  const zdot = env.ZDOTDIR || home;
+  return [.../* @__PURE__ */ new Set([
+    join7(home, ".bashrc"),
+    join7(home, ".bash_profile"),
+    join7(home, ".profile"),
+    join7(xdg, "bash", ".bashrc"),
+    join7(xdg, "bash", ".bash_profile"),
+    join7(zdot, ".zshrc"),
+    join7(zdot, ".zshenv"),
+    join7(xdg, "zsh", ".zshrc"),
+    join7(xdg, "zsh", ".zshenv"),
+    join7(home, ".ashrc"),
+    join7(xdg, "fish", "config.fish")
+  ])];
+};
+function withoutOpenCodePath(text, binDir) {
+  const lines = String(text || "").split("\n");
+  const dirs = [binDir, "$HOME/.opencode/bin", "~/.opencode/bin"];
+  const isPath = (l) => dirs.some((dir) => l.trim() === `export PATH=${dir}:$PATH` || l.trim() === `fish_add_path ${dir}`);
+  const out = [];
+  let changed = false;
+  for (const l of lines) {
+    if (!isPath(l)) {
+      out.push(l);
+      continue;
+    }
+    changed = true;
+    if (out.length && out[out.length - 1].trim() === "# opencode") {
+      out.pop();
+      if (out.length && out[out.length - 1].trim() === "") out.pop();
+    }
+  }
+  return { text: out.join("\n"), changed };
+}
+function openCodeInstall({ path, real = path, home }) {
+  if (!path) return { kind: "none", path: "" };
+  const own = join7(home, ".opencode");
+  if (path.startsWith(own + "/") || String(real).startsWith(own + "/")) return { kind: "installer", path, dir: own, binDir: join7(own, "bin") };
+  if (/\/node_modules\/opencode-ai\//.test(real)) return { kind: "npm", path };
+  if (/\/Cellar\/opencode\//.test(real) || /^\/(opt\/homebrew|home\/linuxbrew\/\.linuxbrew)\//.test(path)) return { kind: "brew", path };
+  return { kind: "other", path };
+}
+function openCodeRemovalHint(info, { npmNeedsSudo = false } = {}) {
+  if (info.kind === "installer") return `rm -rf ~/.opencode \u2014 and delete the "# opencode" PATH line from your shell's startup file (~/.bashrc or ~/.zshrc)`;
+  if (info.kind === "npm") return `${npmNeedsSudo ? "sudo " : ""}npm uninstall -g opencode-ai`;
+  if (info.kind === "brew") return "brew uninstall opencode";
+  if (info.kind === "other") return `it is at ${info.path} \u2014 remove it the way it was installed`;
+  return "";
+}
 function withoutEnvKeys(text, keys) {
   const drop = new RegExp(`^\\s*(?:export\\s+)?(?:${keys.join("|")})=`);
   const kept = String(text || "").split(/\r?\n/).filter((l) => !drop.test(l));
@@ -15334,6 +15385,9 @@ async function runUninstall(d) {
   const removeKeys = keys.length ? await ask(d.removeKeys, true, `Also remove your saved ${keys.join(" and ")}?${trNote} [y/N] `) : false;
   const removeNotes = notes.folders ? await ask(d.removeNotes, true, `Also delete your project notes \u2014 ${notes.folders} project folder${notes.folders > 1 ? "s" : ""} in ${notes.root}? [y/N] `) : false;
   let removeSessions = sessions.exists ? await ask(d.removeSessions, true, `Also delete ALL OpenCode sessions on this computer \u2014 every conversation, from Code and from the OpenCode app (${sessions.dir}; your provider logins stay)? [y/N] `) : false;
+  const oc = d.openCode();
+  const how = { installer: "from OpenCode's installer, in ~/.opencode", npm: "with npm", brew: "with Homebrew" }[oc.kind];
+  const removeOpenCode = oc.kind !== "none" && oc.kind !== "other" ? await ask(d.removeOpenCode, true, `Also remove OpenCode itself (installed ${how})? [y/N] `) : false;
   const left = [];
   for (const port of ports) {
     const r = svc.uninstall(port);
@@ -15387,6 +15441,20 @@ async function runUninstall(d) {
     d.deleteSessions();
     io.say(`\u2713 Deleted the OpenCode sessions in ${sessions.dir} (provider logins kept)`);
   }
+  let ocGone = false;
+  if (removeOpenCode) {
+    let r;
+    try {
+      r = await d.removeOpenCodeProgram(oc);
+    } catch (e) {
+      r = { ok: false, why: e && e.message || String(e), said: [] };
+    }
+    for (const line of r.said || []) io.say(line);
+    if (r.ok) {
+      ocGone = true;
+      io.say("\u2713 Removed OpenCode");
+    } else io.say(`\u2716 Could not remove OpenCode (${r.why}) \u2014 to do it yourself: ${oc.hint}`);
+  }
   d.removePath(d.codeDir);
   io.say(`\u2713 Deleted ${d.codeDir}`);
   if (d.script) {
@@ -15396,12 +15464,15 @@ async function runUninstall(d) {
   io.say("");
   if (!ports.length && pairings.length) io.say("If witbitz-code is still running in a terminal window, close that window (Ctrl-C).");
   if (left.length) io.say(`Your phone may still list ${left.map((p) => `"${p.name}"`).join(", ")}: open Code \u2192 Settings \u2192 Remove there.`);
-  io.say("witbitz-code is removed. OpenCode is still installed \u2014 to remove it too: npm uninstall -g opencode-ai");
+  if (ocGone) io.say(`witbitz-code and OpenCode are removed. Open a new terminal window so it forgets the old PATH.${removeSessions ? "" : `
+OpenCode's own data stays: ${sessions.dir} (sessions, saved logins) and its settings in ~/.config/opencode \u2014 delete those folders to remove everything.`}`);
+  else if (oc.kind !== "none") io.say(`witbitz-code is removed. OpenCode is still installed \u2014 to remove it too: ${oc.hint}`);
+  else io.say("witbitz-code is removed.");
   return { done: true, left: left.length };
 }
 
 // tools/witbitz-code.mjs
-import { readFileSync as readFileSync8, existsSync as existsSync8, mkdirSync as mkdirSync6, rmSync as rmSync4, readdirSync as readdirSync3, readlinkSync } from "node:fs";
+import { readFileSync as readFileSync8, existsSync as existsSync8, mkdirSync as mkdirSync6, rmSync as rmSync4, readdirSync as readdirSync3, readlinkSync, realpathSync as realpathSync2, rmdirSync, accessSync, writeFileSync as writeFileSync7, copyFileSync as copyFileSync2, constants as fsConstants } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { join as join8, dirname as dirname4 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15423,10 +15494,10 @@ var HELP = `witbitz-code ${VERSION2} \u2014 reach OpenCode on this computer from
   trustedrouter-key            store your TrustedRouter API key in OpenCode's credentials (same as opencode auth login)
   service install|uninstall|status [--port <n>]
                                start witbitz-code with the computer (systemd user service on Linux, launchd on macOS)
-  uninstall [--yes] [--remove-keys] [--remove-notes] [--remove-sessions]
+  uninstall [--yes] [--remove-keys] [--remove-notes] [--remove-sessions] [--remove-opencode]
                                remove witbitz-code from this computer: the background service, this computer from your
-                               accounts, its files \u2014 and, if you say so, the saved keys, project notes and OpenCode
-                               sessions. OpenCode and your projects stay.
+                               accounts, its files \u2014 and, if you say so, the saved keys, project notes, OpenCode
+                               sessions and OpenCode itself. Your projects always stay.
 
 Nothing listens on the network: OpenCode stays on 127.0.0.1 and the connector dials out to wss://code-relay.witbitz.chat.
 `;
@@ -15627,6 +15698,50 @@ function openCodeHolders(dir) {
   }
   return hits;
 }
+function openCodeHere() {
+  const path = findOpenCode();
+  let real = path;
+  try {
+    real = path ? realpathSync2(path) : "";
+  } catch {
+  }
+  const info = openCodeInstall({ path, real, home: homedir9() });
+  let npmNeedsSudo = false;
+  if (info.kind === "npm") {
+    const root = String(spawnSync2("npm", ["root", "-g"], { encoding: "utf8" }).stdout || "").trim();
+    try {
+      accessSync(root, fsConstants.W_OK);
+    } catch {
+      npmNeedsSudo = true;
+    }
+  }
+  return { ...info, npmNeedsSudo, hint: openCodeRemovalHint(info, { npmNeedsSudo }) };
+}
+async function removeOpenCodeProgram(info) {
+  const said = [];
+  if (info.kind === "installer") {
+    rmSync4(info.dir, { recursive: true, force: true });
+    for (const f of shellStartupFiles(homedir9(), process.env)) {
+      let text;
+      try {
+        text = readFileSync8(f, "utf8");
+      } catch {
+        continue;
+      }
+      const r = withoutOpenCodePath(text, info.binDir);
+      if (!r.changed) continue;
+      copyFileSync2(f, `${f}.before-witbitz-uninstall`);
+      writeFileSync7(f, r.text);
+      said.push(`\u2713 Removed OpenCode's PATH line from ${f} (the file as it was: ${f}.before-witbitz-uninstall)`);
+    }
+  } else if (info.kind === "npm") {
+    if (info.npmNeedsSudo) return { ok: false, why: "npm's global folder needs sudo here", said };
+    spawnSync2("npm", ["uninstall", "-g", "opencode-ai"], { stdio: "inherit" });
+  } else if (info.kind === "brew") {
+    spawnSync2("brew", ["uninstall", "opencode"], { stdio: "inherit" });
+  } else return { ok: false, why: "unknown install", said };
+  return existsSync8(info.path) ? { ok: false, why: `${info.path} is still there`, said } : { ok: true, said };
+}
 async function uninstall(args) {
   const yes2 = args.includes("--yes");
   if (!yes2 && !process.stdin.isTTY) {
@@ -15684,6 +15799,9 @@ async function uninstall(args) {
       for (const f of readdirSync3(dir)) if (f !== "auth.json") rmSync4(join8(dir, f), { recursive: true, force: true });
     },
     openCodeProcesses: () => openCodeHolders(dirname4(authFile)),
+    openCode: openCodeHere,
+    removeOpenCode: args.includes("--remove-opencode"),
+    removeOpenCodeProgram,
     stopProcess: async (pid) => {
       const gone = () => {
         try {
@@ -15714,6 +15832,10 @@ async function uninstall(args) {
       return gone();
     }
   });
+  if (r.done) try {
+    rmdirSync(join8(homedir9(), ".witbitz"));
+  } catch {
+  }
   if (r.done && !r.left && PAIRINGS_PATH2 !== join8(codeDir, "pairings.json")) rmSync4(PAIRINGS_PATH2, { force: true });
 }
 async function service(args) {

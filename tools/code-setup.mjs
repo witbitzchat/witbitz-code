@@ -441,6 +441,55 @@ export async function runSetup(d) {
   return result
 }
 
+// ── OpenCode itself: how it was installed, and how to remove it ──────────────────────────────────────────────────────────
+
+/** The shell startup files OpenCode's installer (opencode.ai/install) may have added its PATH line to. */
+export const shellStartupFiles = (home, env = {}) => {
+  const xdg = env.XDG_CONFIG_HOME || join(home, '.config')
+  const zdot = env.ZDOTDIR || home
+  return [...new Set([join(home, '.bashrc'), join(home, '.bash_profile'), join(home, '.profile'), join(xdg, 'bash', '.bashrc'), join(xdg, 'bash', '.bash_profile'),
+    join(zdot, '.zshrc'), join(zdot, '.zshenv'), join(xdg, 'zsh', '.zshrc'), join(xdg, 'zsh', '.zshenv'), join(home, '.ashrc'), join(xdg, 'fish', 'config.fish')])]
+}
+
+/** A startup file without the lines OpenCode's installer appended: "\n# opencode\n" then `export PATH=<dir>:$PATH` (or
+ *  `fish_add_path <dir>`), read from opencode.ai/install (add_to_path). Only those exact lines go; the comment and the
+ *  blank line before it only when they sit right above the PATH line. Pure. → { text, changed } */
+export function withoutOpenCodePath(text, binDir) {
+  const lines = String(text || '').split('\n')
+  const dirs = [binDir, '$HOME/.opencode/bin', '~/.opencode/bin']
+  const isPath = (l) => dirs.some((dir) => l.trim() === `export PATH=${dir}:$PATH` || l.trim() === `fish_add_path ${dir}`)
+  const out = []
+  let changed = false
+  for (const l of lines) {
+    if (!isPath(l)) { out.push(l); continue }
+    changed = true
+    if (out.length && out[out.length - 1].trim() === '# opencode') {
+      out.pop()
+      if (out.length && out[out.length - 1].trim() === '') out.pop()
+    }
+  }
+  return { text: out.join('\n'), changed }
+}
+
+/** How OpenCode got here, from where `opencode` resolves. → { kind: 'installer'|'npm'|'brew'|'other'|'none', path, dir? } */
+export function openCodeInstall({ path, real = path, home }) {
+  if (!path) return { kind: 'none', path: '' }
+  const own = join(home, '.opencode')
+  if (path.startsWith(own + '/') || String(real).startsWith(own + '/')) return { kind: 'installer', path, dir: own, binDir: join(own, 'bin') }
+  if (/\/node_modules\/opencode-ai\//.test(real)) return { kind: 'npm', path }
+  if (/\/Cellar\/opencode\//.test(real) || /^\/(opt\/homebrew|home\/linuxbrew\/\.linuxbrew)\//.test(path)) return { kind: 'brew', path }
+  return { kind: 'other', path }
+}
+
+/** The command a person would run to remove it — shown when they keep OpenCode, or when removing it needs sudo. */
+export function openCodeRemovalHint(info, { npmNeedsSudo = false } = {}) {
+  if (info.kind === 'installer') return `rm -rf ~/.opencode — and delete the "# opencode" PATH line from your shell's startup file (~/.bashrc or ~/.zshrc)`
+  if (info.kind === 'npm') return `${npmNeedsSudo ? 'sudo ' : ''}npm uninstall -g opencode-ai`
+  if (info.kind === 'brew') return 'brew uninstall opencode'
+  if (info.kind === 'other') return `it is at ${info.path} — remove it the way it was installed`
+  return ''
+}
+
 // ── uninstall ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** An env file's text without the given keys; every other line kept verbatim. Pure. */
@@ -468,6 +517,7 @@ export function withoutAuthKey(text, provider) {
  *   '' from the repository) · hasKeys() → names[] · deleteKeys() · removePath(path)
  *   notes() → { root, folders, pluginFiles[] } · sessions() → { dir, exists } · deleteSessions()
  *   openCodeProcesses() → [{ pid, cmd }] (processes with OpenCode's data folder open) · stopProcess(pid) → Promise<boolean>
+ *   openCode() → openCodeInstall() + { hint } · removeOpenCodeProgram(info) → Promise<{ ok, why?, said[] }> · removeOpenCode (--remove-opencode)
  */
 export async function runUninstall(d) {
   const { io, service: svc } = d
@@ -491,6 +541,11 @@ export async function runUninstall(d) {
   const removeKeys = keys.length ? await ask(d.removeKeys, true, `Also remove your saved ${keys.join(' and ')}?${trNote} [y/N] `) : false
   const removeNotes = notes.folders ? await ask(d.removeNotes, true, `Also delete your project notes — ${notes.folders} project folder${notes.folders > 1 ? 's' : ''} in ${notes.root}? [y/N] `) : false
   let removeSessions = sessions.exists ? await ask(d.removeSessions, true, `Also delete ALL OpenCode sessions on this computer — every conversation, from Code and from the OpenCode app (${sessions.dir}; your provider logins stay)? [y/N] `) : false
+  const oc = d.openCode()
+  const how = { installer: "from OpenCode's installer, in ~/.opencode", npm: 'with npm', brew: 'with Homebrew' }[oc.kind]
+  const removeOpenCode = oc.kind !== 'none' && oc.kind !== 'other'
+    ? await ask(d.removeOpenCode, true, `Also remove OpenCode itself (installed ${how})? [y/N] `)
+    : false
 
   const left = []
   for (const port of ports) {
@@ -526,12 +581,21 @@ export async function runUninstall(d) {
   if (notes.pluginFiles.length) io.say('✓ Removed the project-notes plugin from OpenCode')
   if (removeNotes) { d.removePath(notes.root); io.say(`✓ Deleted ${notes.root}`) }
   if (removeSessions) { d.deleteSessions(); io.say(`✓ Deleted the OpenCode sessions in ${sessions.dir} (provider logins kept)`) }
+  let ocGone = false
+  if (removeOpenCode) {
+    let r
+    try { r = await d.removeOpenCodeProgram(oc) } catch (e) { r = { ok: false, why: (e && e.message) || String(e), said: [] } }
+    for (const line of r.said || []) io.say(line)
+    if (r.ok) { ocGone = true; io.say('✓ Removed OpenCode') } else io.say(`✖ Could not remove OpenCode (${r.why}) — to do it yourself: ${oc.hint}`)
+  }
   d.removePath(d.codeDir)
   io.say(`✓ Deleted ${d.codeDir}`)
   if (d.script) { d.removePath(d.script); io.say(`✓ Deleted ${d.script}`) }
   io.say('')
   if (!ports.length && pairings.length) io.say('If witbitz-code is still running in a terminal window, close that window (Ctrl-C).')
   if (left.length) io.say(`Your phone may still list ${left.map((p) => `"${p.name}"`).join(', ')}: open Code → Settings → Remove there.`)
-  io.say('witbitz-code is removed. OpenCode is still installed — to remove it too: npm uninstall -g opencode-ai')
+  if (ocGone) io.say(`witbitz-code and OpenCode are removed. Open a new terminal window so it forgets the old PATH.${removeSessions ? '' : `\nOpenCode's own data stays: ${sessions.dir} (sessions, saved logins) and its settings in ~/.config/opencode — delete those folders to remove everything.`}`)
+  else if (oc.kind !== 'none') io.say(`witbitz-code is removed. OpenCode is still installed — to remove it too: ${oc.hint}`)
+  else io.say('witbitz-code is removed.')
   return { done: true, left: left.length }
 }

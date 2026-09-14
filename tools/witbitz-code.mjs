@@ -18,8 +18,8 @@ import { main as pairMain, envSet, writeSecret, unpairEntry } from './opencode-p
 import { startConnector, loadPairings, parseEnvPassword, pairingsForPort, PAIRINGS_PATH } from './opencode-connector.mjs'
 import { startConfidentialProxy, proxyPortFor, proxyConfig, tinfoilKey } from './code-confidential.mjs'
 import { policyConfig, mergeConfig } from './code-opencode-policy.mjs'
-import { runSetup, runUninstall, serviceManager, readLine, validKeyShape, checkTinfoilKey, checkTrustedRouterKey, authPath, withAuthKey, withoutAuthKey, withoutEnvKeys, pairingPort, withPairingPort } from './code-setup.mjs'
-import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync, readlinkSync } from 'node:fs'
+import { runSetup, runUninstall, serviceManager, readLine, validKeyShape, checkTinfoilKey, checkTrustedRouterKey, authPath, withAuthKey, withoutAuthKey, withoutEnvKeys, pairingPort, withPairingPort, openCodeInstall, openCodeRemovalHint, shellStartupFiles, withoutOpenCodePath } from './code-setup.mjs'
+import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync, readlinkSync, realpathSync, rmdirSync, accessSync, writeFileSync, copyFileSync, constants as fsConstants } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,10 +43,10 @@ const HELP = `witbitz-code ${VERSION} — reach OpenCode on this computer from t
   trustedrouter-key            store your TrustedRouter API key in OpenCode's credentials (same as opencode auth login)
   service install|uninstall|status [--port <n>]
                                start witbitz-code with the computer (systemd user service on Linux, launchd on macOS)
-  uninstall [--yes] [--remove-keys] [--remove-notes] [--remove-sessions]
+  uninstall [--yes] [--remove-keys] [--remove-notes] [--remove-sessions] [--remove-opencode]
                                remove witbitz-code from this computer: the background service, this computer from your
-                               accounts, its files — and, if you say so, the saved keys, project notes and OpenCode
-                               sessions. OpenCode and your projects stay.
+                               accounts, its files — and, if you say so, the saved keys, project notes, OpenCode
+                               sessions and OpenCode itself. Your projects always stay.
 
 Nothing listens on the network: OpenCode stays on 127.0.0.1 and the connector dials out to wss://code-relay.witbitz.chat.
 `
@@ -212,6 +212,43 @@ function openCodeHolders(dir) {
   return hits
 }
 
+/** OpenCode on this computer: how it was installed, and the command that removes it. */
+function openCodeHere() {
+  const path = findOpenCode()
+  let real = path
+  try { real = path ? realpathSync(path) : '' } catch { /* a dangling link: use the path */ }
+  const info = openCodeInstall({ path, real, home: homedir() })
+  let npmNeedsSudo = false
+  if (info.kind === 'npm') {
+    const root = String(spawnSync('npm', ['root', '-g'], { encoding: 'utf8' }).stdout || '').trim()
+    try { accessSync(root, fsConstants.W_OK) } catch { npmNeedsSudo = true }
+  }
+  return { ...info, npmNeedsSudo, hint: openCodeRemovalHint(info, { npmNeedsSudo }) }
+}
+
+/** Remove OpenCode the way it was installed. Never runs sudo — that is said instead. Checked afterwards: gone is gone. */
+async function removeOpenCodeProgram(info) {
+  const said = []
+  if (info.kind === 'installer') {
+    rmSync(info.dir, { recursive: true, force: true })
+    for (const f of shellStartupFiles(homedir(), process.env)) {
+      let text
+      try { text = readFileSync(f, 'utf8') } catch { continue }
+      const r = withoutOpenCodePath(text, info.binDir)
+      if (!r.changed) continue
+      copyFileSync(f, `${f}.before-witbitz-uninstall`)
+      writeFileSync(f, r.text)
+      said.push(`✓ Removed OpenCode's PATH line from ${f} (the file as it was: ${f}.before-witbitz-uninstall)`)
+    }
+  } else if (info.kind === 'npm') {
+    if (info.npmNeedsSudo) return { ok: false, why: "npm's global folder needs sudo here", said }
+    spawnSync('npm', ['uninstall', '-g', 'opencode-ai'], { stdio: 'inherit' })
+  } else if (info.kind === 'brew') {
+    spawnSync('brew', ['uninstall', 'opencode'], { stdio: 'inherit' })
+  } else return { ok: false, why: 'unknown install', said }
+  return existsSync(info.path) ? { ok: false, why: `${info.path} is still there`, said } : { ok: true, said }
+}
+
 async function uninstall(args) {
   const yes = args.includes('--yes')
   if (!yes && !process.stdin.isTTY) { console.error('witbitz-code: uninstall asks before it removes anything — run it in a terminal, or pass --yes'); process.exit(2) }
@@ -250,6 +287,9 @@ async function uninstall(args) {
     sessions: () => { const dir = dirname(authFile); return { dir, exists: existsSync(dir) && readdirSync(dir).some((f) => f !== 'auth.json') } },
     deleteSessions: () => { const dir = dirname(authFile); for (const f of readdirSync(dir)) if (f !== 'auth.json') rmSync(join(dir, f), { recursive: true, force: true }) },
     openCodeProcesses: () => openCodeHolders(dirname(authFile)),
+    openCode: openCodeHere,
+    removeOpenCode: args.includes('--remove-opencode'),
+    removeOpenCodeProgram,
     stopProcess: async (pid) => {
       // gone = no such process, or a zombie (exited, not yet reaped by its parent — measured: kill(pid, 0) still succeeds)
       const gone = () => { try { process.kill(pid, 0) } catch { return true } try { return /^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8')) } catch { return false } }
@@ -260,6 +300,7 @@ async function uninstall(args) {
       return gone()
     },
   })
+  if (r.done) try { rmdirSync(join(homedir(), '.witbitz')) } catch { /* not empty: something else of the person's lives there */ }
   // a pairings file kept somewhere else (WITBITZ_CODE_PAIRINGS) goes too once every account let go of this computer
   if (r.done && !r.left && PAIRINGS_PATH !== join(codeDir, 'pairings.json')) rmSync(PAIRINGS_PATH, { force: true })
 }

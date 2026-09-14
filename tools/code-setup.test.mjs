@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import {
   KEY_PAGES, validKeyShape, checkTrustedRouterKey, checkTinfoilKey, withAuthKey, systemdUnit, launchdPlist, serviceName,
   launchdLabel, stableScript, serviceManager, runSetup, readLine, pairingPort, withPairingPort, withoutEnvKeys, withoutAuthKey,
-  runUninstall,
+  runUninstall, openCodeInstall, openCodeRemovalHint, withoutOpenCodePath, shellStartupFiles,
 } from './code-setup.mjs'
 import { EventEmitter } from 'node:events'
 
@@ -349,6 +349,9 @@ function fakeUninstall(over = {}) {
     sessions: () => over.sessions ?? { dir: '/home/u/.local/share/opencode', exists: false },
     deleteSessions: () => { state.sessionsDeleted = true },
     openCodeProcesses: async () => over.procs ?? [],
+    openCode: () => over.oc ?? { kind: 'none', path: '', hint: '' },
+    removeOpenCode: !!over.removeOpenCode,
+    removeOpenCodeProgram: async (info) => { state.ocRemoved = info.kind; return over.ocRemoval ?? { ok: true, said: [] } },
     stopProcess: async (pid) => { state.stopped.push(pid); return true },
     service: { installedPorts: () => state.ports, uninstall: (p) => { state.removedServices.push(p); return { ok: true } } },
     allPairings: () => state.pairings,
@@ -382,7 +385,7 @@ test('uninstall, yes: service, account, files and the download go; keys only whe
   assert.deepEqual(f.state.unpaired, ['a@example.com'])
   assert.deepEqual(f.state.removed, ['/home/u/.witbitz/code', '/home/u/witbitz-code.mjs'])
   assert.equal(f.state.keysDeleted, false, 'Enter keeps the keys')
-  assert.match(f.text(), /npm uninstall -g opencode-ai/)
+  assert.match(f.text(), /witbitz-code is removed\.$/m)
   const keys = fakeUninstall({ answers: ['y', 'y'] })
   await runUninstall(keys.d)
   assert.equal(keys.state.keysDeleted, true)
@@ -496,4 +499,56 @@ test('--yes deletes neither notes nor sessions unless their flags say so; nothin
   const none = fakeUninstall({ keys: [], answers: ['y'] })
   await runUninstall(none.d)
   assert.equal(none.text().match(/\[y\/N\]/g).length, 1, 'only "Continue?" — no notes, no sessions, no keys here')
+})
+
+// ── OpenCode itself ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+test("how OpenCode was installed is read from where `opencode` resolves — the owner's test box: OpenCode's installer", () => {
+  const home = '/home/witbitzchat'
+  assert.deepEqual(openCodeInstall({ path: '/home/witbitzchat/.opencode/bin/opencode', home }), { kind: 'installer', path: '/home/witbitzchat/.opencode/bin/opencode', dir: '/home/witbitzchat/.opencode', binDir: '/home/witbitzchat/.opencode/bin' })
+  assert.equal(openCodeInstall({ path: '/home/u/.nvm/versions/node/v24.3.0/bin/opencode', real: '/home/u/.nvm/versions/node/v24.3.0/lib/node_modules/opencode-ai/bin/opencode', home: '/home/u' }).kind, 'npm')
+  assert.equal(openCodeInstall({ path: '/opt/homebrew/bin/opencode', real: '/opt/homebrew/Cellar/opencode/1.18.30/bin/opencode', home: '/Users/u' }).kind, 'brew')
+  assert.equal(openCodeInstall({ path: '/usr/local/bin/opencode', home: '/home/u' }).kind, 'other')
+  assert.equal(openCodeInstall({ path: '', home: '/home/u' }).kind, 'none')
+  // the owner ran `npm uninstall -g opencode-ai` as told and npm said "up to date": the hint must fit the install
+  assert.match(openCodeRemovalHint({ kind: 'installer' }), /^rm -rf ~\/\.opencode/)
+  assert.equal(openCodeRemovalHint({ kind: 'npm' }, { npmNeedsSudo: true }), 'sudo npm uninstall -g opencode-ai')
+  assert.equal(openCodeRemovalHint({ kind: 'brew' }), 'brew uninstall opencode')
+})
+
+test("OpenCode's PATH lines come out of a startup file exactly as its installer wrote them; everything else stays", () => {
+  const bin = '/home/witbitzchat/.opencode/bin'
+  const before = 'alias ll="ls -l"\nexport PATH=$HOME/go/bin:$PATH\n\n# opencode\nexport PATH=/home/witbitzchat/.opencode/bin:$PATH\n'
+  assert.deepEqual(withoutOpenCodePath(before, bin), { text: 'alias ll="ls -l"\nexport PATH=$HOME/go/bin:$PATH\n', changed: true })
+  assert.deepEqual(withoutOpenCodePath('# opencode\nfish_add_path /home/witbitzchat/.opencode/bin', bin), { text: '', changed: true })
+  assert.equal(withoutOpenCodePath('# my notes on opencode\nexport PATH=/opt/opencode/bin:$PATH\n', bin).changed, false, 'another folder is not ours')
+  assert.equal(withoutOpenCodePath('echo hi\nexport PATH=$HOME/.opencode/bin:$PATH\n', bin).text, 'echo hi\n')
+  assert.ok(shellStartupFiles('/home/u').includes('/home/u/.bashrc') && shellStartupFiles('/home/u').includes('/home/u/.config/fish/config.fish'))
+})
+
+test('uninstall asks about OpenCode itself, naming how it was installed; the closing hint fits the install', async () => {
+  const OC = { kind: 'installer', path: '/home/u/.opencode/bin/opencode', dir: '/home/u/.opencode', binDir: '/home/u/.opencode/bin', hint: 'rm -rf ~/.opencode — and delete the "# opencode" PATH line' }
+  const keep = fakeUninstall({ keys: [], oc: OC, answers: ['y', ''] })
+  await runUninstall(keep.d)
+  assert.match(keep.text(), /Also remove OpenCode itself \(installed from OpenCode's installer, in ~\/\.opencode\)\? \[y\/N\]/)
+  assert.equal(keep.state.ocRemoved, undefined)
+  assert.match(keep.text(), /OpenCode is still installed — to remove it too: rm -rf ~\/\.opencode/)
+  assert.doesNotMatch(keep.text(), /npm uninstall/)
+  const gone = fakeUninstall({ keys: [], oc: OC, answers: ['y', 'y'], ocRemoval: { ok: true, said: ['✓ Removed OpenCode\'s PATH line from /home/u/.bashrc'] } })
+  await runUninstall(gone.d)
+  assert.equal(gone.state.ocRemoved, 'installer')
+  assert.match(gone.text(), /✓ Removed OpenCode's PATH line from \/home\/u\/\.bashrc/)
+  assert.match(gone.text(), /witbitz-code and OpenCode are removed\. Open a new terminal window/)
+  const sudo = fakeUninstall({ keys: [], oc: { kind: 'npm', path: '/usr/bin/opencode', hint: 'sudo npm uninstall -g opencode-ai' }, answers: ['y', 'y'], ocRemoval: { ok: false, why: "npm's global folder needs sudo here", said: [] } })
+  await runUninstall(sudo.d)
+  assert.match(sudo.text(), /✖ Could not remove OpenCode \(npm's global folder needs sudo here\) — to do it yourself: sudo npm uninstall -g opencode-ai/)
+  const other = fakeUninstall({ keys: [], oc: { kind: 'other', path: '/usr/local/bin/opencode', hint: 'it is at /usr/local/bin/opencode — remove it the way it was installed' }, answers: ['y'] })
+  await runUninstall(other.d)
+  assert.doesNotMatch(other.text(), /Also remove OpenCode itself/, 'an install it cannot recognise is only described')
+  const scripted = fakeUninstall({ yes: true, oc: OC })
+  await runUninstall(scripted.d)
+  assert.equal(scripted.state.ocRemoved, undefined, '--yes keeps OpenCode unless --remove-opencode')
+  const flagged = fakeUninstall({ yes: true, removeOpenCode: true, oc: OC })
+  await runUninstall(flagged.d)
+  assert.equal(flagged.state.ocRemoved, 'installer')
 })
