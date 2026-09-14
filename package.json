@@ -5,11 +5,13 @@
   "description": "Reach OpenCode on your own computer from the Witbitz Spaces app, end-to-end encrypted over an outbound WebSocket relay.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "bash tools/build-witbitz-code.sh",
     "test": "node --test tools/*.test.mjs spaces/test/*.test.mjs agent/*.test.mjs",
-    "test:relay": "node --test relay/relay.test.mjs",
+    "test:relay": "npm install --no-save miniflare@4.20260730.0 && node --test relay/relay.test.mjs",
     "test:python": "cd packages/witbitz-code-py && python3 -m pytest -q"
   },
   "dependencies": {
@@ -18,7 +20,6 @@
   },
   "devDependencies": {
     "esbuild": "0.28.2",
-    "miniflare": "4.20260630.0",
     "ws": "8.21.0"
   }
 }

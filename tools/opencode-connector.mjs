@@ -13,7 +13,7 @@
 // leaked secret must not unlock more than the page itself can do.
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, relative } from 'node:path'
 import { RelayPeer, allowedRequest, allowedEventPath, projectResponse, RELAY_URL } from '../spaces/public/codeRelay.js'
 import { startConfidentialProxy, proxyPortFor, makeTinfoilReader, tinfoilKey } from './code-confidential.mjs'
 import { stageMessageBody, serveAttachment, removeSessionAttachments, pruneAttachments, attachmentRule, ATTACH_ROOT, MAX_FILE_BYTES } from './code-attachments.mjs' // attachments, the Claude Code way (docs/code-attachments.md)
@@ -75,10 +75,10 @@ function sseReader(onData) {
  * Serve the given pairings. Returns { stop, peers } — `peers` is one RelayPeer per pairing.
  * Options exist for tests: fetchImpl, WebSocketImpl, flushMs, log.
  */
-export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN } = {}) {
+export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, notesConfidentialList = WitbitzNotes.helpers.CONFIDENTIAL_LIST } = {}) {
   const running = []
   try { const n = pruneAttachments(attachRoot); if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`) } catch { /* no folder yet */ }
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath }))
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }))
   return { peers: running.map((r) => r.peer), stop: () => { for (const r of running) r.stop() } }
 }
 
@@ -93,7 +93,7 @@ function tinfoilReaderForKey() {
   return reader
 }
 
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath }) {
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }) {
   const name = pairing.name || hostname()
   const base = String(pairing.opencodeUrl || 'http://127.0.0.1:4096').replace(/\/+$/, '')
   const password = () => pairing.password || parseEnvPassword(existsSync(pairing.envFile || DEFAULT_ENV) ? readFileSync(pairing.envFile || DEFAULT_ENV, 'utf8') : '')
@@ -153,20 +153,12 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     // ATTACHMENTS (docs/code-attachments.md): the files a turn carries are saved on this computer and the message names them.
     let body = typeof m.b === 'string' ? m.b : undefined
     const turnOf = m.m === 'POST' && /^\/session\/([^/]+)\/message$/.exec(path)
-    // PROJECT NOTES (tools/opencode-plugins/witbitz-notes.js): once per session, reads of ITS project's notes folder ask
-    // nothing, and its confidential notes still ask. Only where the plugin is installed; tried once per session.
-    if (turnOf && !notesRuled.has(turnOf[1]) && existsSync(notesPluginPath)) {
-      notesRuled.add(turnOf[1])
-      const s = await sessionFor(turnOf[1], query)
-      const root = s && WitbitzNotes.helpers.rootFromSession(s)
-      if (root) {
-        const dir = `${notesRoot}/${WitbitzNotes.helpers.notesKey(resolve(root))}`
-        await addRules(turnOf[1], query, s, [
-          { permission: 'external_directory', pattern: `${dir}/*`, action: 'allow' },
-          { permission: 'external_directory', pattern: `${dir}/confidential/*`, action: 'ask' }, // last match wins
-        ], 'project notes')
-      }
-    }
+    // PROJECT NOTES (tools/opencode-plugins/witbitz-notes.js), every turn, only where the plugin is installed: reads of ITS
+    // project's notes folder and writes into notes/ ask nothing — one note used to cost FOUR approvals (external_directory +
+    // edit, for the note and its INDEX.md; measured 2026-09-14) and a model that writes notes reluctantly gave up. The
+    // confidential/ folder follows the TURN's model: open for a confidential one, closed (ask) for any other, so a regular
+    // model still cannot read confidential notes unasked. AGENTS.md — injected as INSTRUCTIONS — still asks for every edit.
+    if (turnOf && existsSync(notesPluginPath)) await ruleNotes(turnOf[1], query, body)
     if (turnOf && body && body.includes('"file"')) {
       let parsed = null
       try { parsed = JSON.parse(body) } catch { /* OpenCode answers a malformed body itself */ }
@@ -242,11 +234,36 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     if (ruled.has(sid)) return
     if (await addRules(sid, query, s, [attachmentRule(attachRoot, sid)], 'attachment')) ruled.add(sid) // this session's folder only
   }
-  const notesRuled = new Set()
+  /** The notes rules for one turn (see handle). Appends only what does not already take effect — last match wins. */
+  async function ruleNotes(sid, query, body) {
+    const s = await sessionFor(sid, query)
+    const root = s && WitbitzNotes.helpers.rootFromSession(s)
+    if (!root) return
+    const dir = `${notesRoot}/${WitbitzNotes.helpers.notesKey(resolve(root))}`
+    // The edit tool's pattern is relative to the WORKTREE (measured): the git root, or "/" for a plain folder — whose
+    // session path is its directory without the leading "/".
+    const plain = !!s.path && s.directory === '/' + s.path
+    const rel = relative(plain ? '/' : resolve(root), dir)
+    let model = null
+    try { const b = body ? JSON.parse(body) : null; model = b && b.model && { providerID: b.model.providerID, id: b.model.modelID } } catch { /* OpenCode answers a malformed body itself */ }
+    const open = WitbitzNotes.helpers.isConfidential(model, notesConfidentialList) ? 'allow' : 'ask'
+    const want = [
+      { permission: 'external_directory', pattern: `${dir}/*`, action: 'allow' },
+      { permission: 'edit', pattern: `${rel}/notes/*`, action: 'allow' },
+      { permission: 'external_directory', pattern: `${dir}/confidential/*`, action: open }, // AFTER the folder allow: last match wins
+      { permission: 'edit', pattern: `${rel}/confidential/*`, action: open },
+    ]
+    const have = Array.isArray(s.permission) ? s.permission : []
+    const effective = (rule) => { let a = null; for (const r of have) if (r && r.permission === rule.permission && r.pattern === rule.pattern) a = r.action; return a }
+    const folderMissing = effective(want[0]) !== 'allow'
+    // A re-added folder allow would land after the confidential rule and override it, so then that rule is re-added too.
+    const missing = want.filter((rule, i) => effective(rule) !== rule.action || (folderMissing && i === 2))
+    if (missing.length) await addRules(sid, query, s, missing, 'project notes', { always: true })
+  }
   /** Append the rules the session does not have yet (PATCH appends — measured). True when they are in place. */
-  async function addRules(sid, query, s, rules, what) {
+  async function addRules(sid, query, s, rules, what, { always = false } = {}) {
     const have = Array.isArray(s && s.permission) ? s.permission : []
-    const missing = rules.filter((rule) => !have.some((r) => r && r.permission === rule.permission && r.pattern === rule.pattern && r.action === rule.action))
+    const missing = always ? rules : rules.filter((rule) => !have.some((r) => r && r.permission === rule.permission && r.pattern === rule.pattern && r.action === rule.action))
     if (!missing.length) return true
     try {
       const p = await fetchImpl(`${base}/session/${sid}${query ? '?' + query : ''}`, { method: 'PATCH', headers: { ...auth(), 'content-type': 'application/json' }, body: JSON.stringify({ permission: missing }) })

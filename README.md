@@ -38,7 +38,14 @@ The full design — wire format, key derivation, replay protection, the relay's 
 
 ## Install
 
-**Single file (Node.js ≥ 22)** — the build the app serves:
+**Single file (Node.js ≥ 22)** — the build the app serves. One line:
+
+```bash
+curl -fsSL https://app.witbitz.chat/code.sh | bash
+```
+
+[`spaces/public/code.sh`](spaces/public/code.sh) checks for Node.js, downloads `witbitz-code.mjs` into your home folder,
+checks its sha256 against the app's `assets-manifest.json` (a mismatch is never used), and runs `setup`. Or by hand:
 
 ```bash
 curl -fsSLo witbitz-code.mjs https://app.witbitz.chat/downloads/witbitz-code.mjs
@@ -105,6 +112,7 @@ production.
 | `tools/code-attachments.mjs`, `spaces/public/codeAttachments.js` | attachments saved on the computer for the agent to read |
 | `tools/opencode-config.mjs`, `tools/opencode-plugins/`, `tools/opencode-commands/` | writing an OpenCode config for TrustedRouter's models, and the project-notes plugin |
 | `spaces/public/downloads/witbitz-code.mjs` | the built single file (a test fails if it is stale) |
+| `spaces/public/code.sh` | the one-line installer: download, check against the app's manifest, run `setup` |
 | `relay/relay.mjs` | the relay — a Cloudflare Worker + Durable Object that forwards frames between the sockets on a channel |
 | `packages/witbitz-code-py/` | the Python implementation, tested against the JavaScript one |
 | `docs/opencode-relay.md`, `docs/code-auto-mode.md`, `docs/code-attachments.md` | the design: the relay, Auto mode, attachments |
@@ -116,8 +124,9 @@ page itself, `opencodeApp.js`).
 
 ```bash
 npm ci
-npm test              # codec, connector, pairing, page transport, QR, Auto mode, subagent policy, confidential proxy, attachments, build freshness
-npm run test:relay    # the relay in the Workers runtime (miniflare)
+npm test              # codec, connector, pairing, page transport, QR, Auto mode, subagent policy, confidential proxy, attachments, setup, installer, build freshness
+npm run test:relay    # the relay in the Workers runtime — installs miniflare for this run only (not a dependency: it
+                      # carries advisories in sharp/undici, and nothing from it is in the built file)
 npm run test:python   # the Python package, including frames, flows and Auto decisions checked against the JavaScript modules
 ```
 

@@ -10539,7 +10539,7 @@ if (false) {
 // tools/opencode-connector.mjs
 import { readFileSync as readFileSync6, existsSync as existsSync6 } from "node:fs";
 import { homedir as homedir7, hostname as hostname2 } from "node:os";
-import { join as join6, resolve as resolve3 } from "node:path";
+import { join as join6, resolve as resolve3, relative } from "node:path";
 
 // tools/code-confidential.mjs
 import http from "node:http";
@@ -14494,14 +14494,14 @@ function sseReader(onData) {
     }
   };
 }
-async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1e3, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN } = {}) {
+async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1e3, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, notesConfidentialList = WitbitzNotes.helpers.CONFIDENTIAL_LIST } = {}) {
   const running = [];
   try {
     const n = pruneAttachments(attachRoot);
     if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`);
   } catch {
   }
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath }));
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }));
   return { peers: running.map((r) => r.peer), stop: () => {
     for (const r of running) r.stop();
   } };
@@ -14518,7 +14518,7 @@ function tinfoilReaderForKey() {
   }
   return reader;
 }
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath }) {
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }) {
   const name = pairing.name || hostname2();
   const base = String(pairing.opencodeUrl || "http://127.0.0.1:4096").replace(/\/+$/, "");
   const password = () => pairing.password || parseEnvPassword(existsSync6(pairing.envFile || DEFAULT_ENV) ? readFileSync6(pairing.envFile || DEFAULT_ENV, "utf8") : "");
@@ -14602,19 +14602,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     if (!allowedRequest(m.m, m.p)) return reply(403, { error: "not allowed by the connector" });
     let body = typeof m.b === "string" ? m.b : void 0;
     const turnOf = m.m === "POST" && /^\/session\/([^/]+)\/message$/.exec(path);
-    if (turnOf && !notesRuled.has(turnOf[1]) && existsSync6(notesPluginPath)) {
-      notesRuled.add(turnOf[1]);
-      const s = await sessionFor(turnOf[1], query);
-      const root = s && WitbitzNotes.helpers.rootFromSession(s);
-      if (root) {
-        const dir = `${notesRoot}/${WitbitzNotes.helpers.notesKey(resolve3(root))}`;
-        await addRules(turnOf[1], query, s, [
-          { permission: "external_directory", pattern: `${dir}/*`, action: "allow" },
-          { permission: "external_directory", pattern: `${dir}/confidential/*`, action: "ask" }
-          // last match wins
-        ], "project notes");
-      }
-    }
+    if (turnOf && existsSync6(notesPluginPath)) await ruleNotes(turnOf[1], query, body);
     if (turnOf && body && body.includes('"file"')) {
       let parsed = null;
       try {
@@ -14698,10 +14686,40 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     if (ruled.has(sid)) return;
     if (await addRules(sid, query, s, [attachmentRule(attachRoot, sid)], "attachment")) ruled.add(sid);
   }
-  const notesRuled = /* @__PURE__ */ new Set();
-  async function addRules(sid, query, s, rules, what) {
+  async function ruleNotes(sid, query, body) {
+    const s = await sessionFor(sid, query);
+    const root = s && WitbitzNotes.helpers.rootFromSession(s);
+    if (!root) return;
+    const dir = `${notesRoot}/${WitbitzNotes.helpers.notesKey(resolve3(root))}`;
+    const plain2 = !!s.path && s.directory === "/" + s.path;
+    const rel = relative(plain2 ? "/" : resolve3(root), dir);
+    let model = null;
+    try {
+      const b = body ? JSON.parse(body) : null;
+      model = b && b.model && { providerID: b.model.providerID, id: b.model.modelID };
+    } catch {
+    }
+    const open = WitbitzNotes.helpers.isConfidential(model, notesConfidentialList) ? "allow" : "ask";
+    const want = [
+      { permission: "external_directory", pattern: `${dir}/*`, action: "allow" },
+      { permission: "edit", pattern: `${rel}/notes/*`, action: "allow" },
+      { permission: "external_directory", pattern: `${dir}/confidential/*`, action: open },
+      // AFTER the folder allow: last match wins
+      { permission: "edit", pattern: `${rel}/confidential/*`, action: open }
+    ];
+    const have = Array.isArray(s.permission) ? s.permission : [];
+    const effective = (rule) => {
+      let a = null;
+      for (const r of have) if (r && r.permission === rule.permission && r.pattern === rule.pattern) a = r.action;
+      return a;
+    };
+    const folderMissing = effective(want[0]) !== "allow";
+    const missing = want.filter((rule, i) => effective(rule) !== rule.action || folderMissing && i === 2);
+    if (missing.length) await addRules(sid, query, s, missing, "project notes", { always: true });
+  }
+  async function addRules(sid, query, s, rules, what, { always = false } = {}) {
     const have = Array.isArray(s && s.permission) ? s.permission : [];
-    const missing = rules.filter((rule) => !have.some((r) => r && r.permission === rule.permission && r.pattern === rule.pattern && r.action === rule.action));
+    const missing = always ? rules : rules.filter((rule) => !have.some((r) => r && r.permission === rule.permission && r.pattern === rule.pattern && r.action === rule.action));
     if (!missing.length) return true;
     try {
       const p = await fetchImpl(`${base}/session/${sid}${query ? "?" + query : ""}`, { method: "PATCH", headers: { ...auth(), "content-type": "application/json" }, body: JSON.stringify({ permission: missing }) });

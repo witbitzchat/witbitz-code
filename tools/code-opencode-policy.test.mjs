@@ -54,16 +54,19 @@ const freePort = () => new Promise((res) => { const s = createServer(); s.listen
 /** Last matching rule wins — OpenCode's own evaluation, for pattern "*". */
 const resolve = (rules, perm) => { let r = null; for (const x of rules) if ((x.permission === perm || x.permission === '*') && x.pattern === '*') r = x.action; return r }
 
-test('LIVE: an OpenCode started with the policy resolves subagents to ask, and leaves the rest as it was', { skip: !hasOpencode && 'opencode is not installed', timeout: 60_000 }, async (t) => {
+test('LIVE: an OpenCode started with the policy resolves subagents to ask, and leaves the rest as it was', { skip: !hasOpencode && 'opencode is not installed', timeout: 90_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'wb-policy-'))
   const port = await freePort()
-  const env = { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(policyConfig()) }
+  // WITBITZ_NOTES_DIR: the installed notes plugin makes a notes folder per project — keep this throwaway one out of the real set
+  const env = { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(policyConfig()), WITBITZ_NOTES_DIR: join(dir, '.notes') }
   delete env.OPENCODE_SERVER_PASSWORD; delete env.OPENAI_API_KEY
   const child = spawn('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], { cwd: dir, env, stdio: 'ignore' })
   t.after(() => child.kill())
   let agents = null
   for (let i = 0; i < 100 && !agents; i++) {
-    try { const r = await fetch(`http://127.0.0.1:${port}/agent?directory=${encodeURIComponent(dir)}`); if (r.ok) agents = await r.json() } catch { await new Promise((r) => setTimeout(r, 300)) }
+    // each probe bounded, and a pause after ANY miss — a slow start under a busy test run must not spin or hang the loop
+    try { const r = await fetch(`http://127.0.0.1:${port}/agent?directory=${encodeURIComponent(dir)}`, { signal: AbortSignal.timeout(5000) }); if (r.ok) agents = await r.json() } catch { /* not up yet */ }
+    if (!agents) await new Promise((r) => setTimeout(r, 300))
   }
   assert.ok(Array.isArray(agents), 'OpenCode answered /agent')
   const get = (n) => agents.find((a) => a.name === n)

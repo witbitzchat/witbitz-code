@@ -15,6 +15,7 @@ async function fakeOpenCode() {
   const seen = []
   const streams = new Set()
   const big = 'z'.repeat(CHUNK * 2 + 123)
+  const rules = new Map() // session path → its permission rules (PATCH appends)
   const srv = createServer(async (req, res) => {
     let body = ''
     for await (const c of req) body += c
@@ -29,8 +30,12 @@ async function fakeOpenCode() {
     if (path === '/session/ses_big/message') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(big) }
     if (path === '/session/ses_1/message' && req.method === 'POST') return json({ echoed: JSON.parse(body) })
     if (path === '/session/ses_nope' && req.method === 'GET') return json({ name: 'NotFoundError' }, 404) // measured shape aside, a 404
-    if (path === '/session/ses_notes' && req.method === 'GET') return json({ id: 'ses_notes', directory: '/home/u/repo/web', path: 'web', permission: [] })
-    if (path === '/session/ses_notes/message' && req.method === 'POST') return json({ echoed: JSON.parse(body) })
+    // Notes sessions keep their rules like OpenCode does: PATCH APPENDS (measured, 1.18.30). A git project's session (its
+    // path is the subfolder) and a plain folder's (path = directory without the leading "/", worktree "/").
+    const notesSession = { ses_notes: { directory: '/home/u/repo/web', path: 'web' }, ses_plain: { directory: '/home/u/scratch', path: 'home/u/scratch' } }[path.split('/')[2]]
+    if (notesSession && path.split('/').length === 3 && req.method === 'GET') return json({ id: path.split('/')[2], ...notesSession, permission: rules.get(path) || [] })
+    if (notesSession && path.split('/').length === 3 && req.method === 'PATCH') { rules.set(path, [...(rules.get(path) || []), ...JSON.parse(body).permission]); return json({}) }
+    if (notesSession && path.endsWith('/message') && req.method === 'POST') return json({ echoed: JSON.parse(body) })
     if (path === '/session/ses_slow/message') { res.on('close', () => seen.push({ aborted: '/session/ses_slow/message' })); return } // never answers; res 'close' = the caller went away (req 'close' already fired once the body was read)
     if (path === '/event') {
       res.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -44,7 +49,7 @@ async function fakeOpenCode() {
   await new Promise((r) => srv.listen(0, '127.0.0.1', r))
   return {
     url: `http://127.0.0.1:${srv.address().port}`,
-    seen, big, streams,
+    seen, big, streams, rules,
     emit: (obj) => { for (const s of streams) s.write(`data: ${JSON.stringify(obj)}\n\n`) },
     close: () => new Promise((r) => { for (const s of streams) s.destroy(); srv.closeAllConnections(); srv.close(() => r()) }),
   }
@@ -350,23 +355,59 @@ test('ATTACHMENTS: a file over the limit refuses the turn with a reason, and Ope
 })
 
 // ── project notes (tools/opencode-plugins/witbitz-notes.js) ─────────────────────────────────────────────────────────
-test('NOTES: once per session, its project\'s notes folder reads without asking and confidential notes still ask', async (t) => {
+// Notes writes asked FOUR times per note (external_directory + edit, for the note and its INDEX.md) — measured 2026-09-14,
+// and a model that already writes notes reluctantly gave up. Now: writes into notes/ ask nothing; confidential/ follows the
+// TURN's model (allowed for a confidential model, asked for any other, so a regular model still cannot read confidential
+// notes unasked); AGENTS.md — injected as INSTRUCTIONS — still asks. The edit pattern is relative to the project's worktree:
+// the git root for a git project, "/" for a plain folder (measured: "../notes/notes/a.md" vs "tmp/…/notes/a.md").
+async function notesRig(t) {
   const { mkdtempSync, writeFileSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
-  const { createHash } = await import('node:crypto')
   const dir = mkdtempSync(join(tmpdir(), 'wb-conn-notes-'))
   writeFileSync(join(dir, 'witbitz-notes.js'), '// installed')
-  const { call, oc } = await rig(t, { connectorOptions: { notesRoot: '/n', notesPluginPath: join(dir, 'witbitz-notes.js') } })
-  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { parts: [{ type: 'text', text: 'hi' }] })
-  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { parts: [{ type: 'text', text: 'again' }] })
-  const patches = oc.seen.filter((s) => s.method === 'PATCH' && s.url.startsWith('/session/ses_notes'))
-  const key = `repo-${createHash('sha1').update('/home/u/repo').digest('hex').slice(0, 8)}`
-  assert.equal(patches.length, 1, 'once per session')
-  assert.deepEqual(JSON.parse(patches[0].body), { permission: [
-    { permission: 'external_directory', pattern: `/n/${key}/*`, action: 'allow' },
-    { permission: 'external_directory', pattern: `/n/${key}/confidential/*`, action: 'ask' },
-  ] }, 'the git root (directory minus path) names the folder the plugin uses')
+  writeFileSync(join(dir, 'confidential.json'), JSON.stringify(['trustedrouter/deepseek/deepseek-v4-flash']))
+  return rig(t, { connectorOptions: { notesRoot: '/n', notesPluginPath: join(dir, 'witbitz-notes.js'), notesConfidentialList: join(dir, 'confidential.json') } })
+}
+const keyOf = async (root) => { const { createHash } = await import('node:crypto'); const b = root.split('/').pop(); return `${b}-${createHash('sha1').update(root).digest('hex').slice(0, 8)}` }
+const effective = (rules, permission, pattern) => { let a = null; for (const r of rules) if (r.permission === permission && r.pattern === pattern) a = r.action; return a }
+const CONF = { providerID: 'trustedrouter', modelID: 'deepseek/deepseek-v4-flash' }
+const PLAIN = { providerID: 'trustedrouter', modelID: 'x-ai/grok-4.6' }
+
+test('NOTES: writes into the project\'s notes folder ask nothing; confidential notes follow the turn\'s model; AGENTS.md still asks', async (t) => {
+  const { call, oc } = await notesRig(t)
+  const key = await keyOf('/home/u/repo')
+  const rel = `../../../n/${key}` // from the git root /home/u/repo
+  const rulesNow = async () => oc.rules.get('/session/ses_notes') || []
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: PLAIN, parts: [{ type: 'text', text: 'hi' }] })
+  let r = await rulesNow()
+  assert.equal(effective(r, 'external_directory', `/n/${key}/*`), 'allow', 'reads of the notes folder')
+  assert.equal(effective(r, 'edit', `${rel}/notes/*`), 'allow', 'writes into notes/')
+  assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'ask', 'a regular model: confidential notes ask')
+  assert.equal(effective(r, 'edit', `${rel}/confidential/*`), 'ask')
+  assert.ok(!r.some((x) => x.permission === 'edit' && x.action === 'allow' && /AGENTS\.md|\/\*$/.test(x.pattern) && !/\/(notes|confidential)\/\*$/.test(x.pattern)), 'nothing allows AGENTS.md')
+  const patchesBefore = oc.seen.filter((s) => s.method === 'PATCH').length
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: PLAIN, parts: [{ type: 'text', text: 'again' }] })
+  assert.equal(oc.seen.filter((s) => s.method === 'PATCH').length, patchesBefore, 'nothing changed — nothing is sent')
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: CONF, parts: [{ type: 'text', text: 'confidential now' }] })
+  r = await rulesNow()
+  assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'allow', 'a confidential model: its notes ask nothing')
+  assert.equal(effective(r, 'edit', `${rel}/confidential/*`), 'allow')
+  await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: PLAIN, parts: [{ type: 'text', text: 'back to a regular model' }] })
+  r = await rulesNow()
+  assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'ask', 'closed again for a regular model')
+  assert.equal(effective(r, 'edit', `${rel}/confidential/*`), 'ask')
+  const lastConfidentialRead = r.map((x) => x.pattern).lastIndexOf(`/n/${key}/confidential/*`)
+  assert.ok(lastConfidentialRead > r.map((x) => x.pattern).lastIndexOf(`/n/${key}/*`), 'the confidential rule stays AFTER the folder allow — last match wins')
+})
+
+test('NOTES: a plain folder\'s edit rule is relative to "/", and a turn with no model keeps confidential notes closed', async (t) => {
+  const { call, oc } = await notesRig(t)
+  const key = await keyOf('/home/u/scratch')
+  await call('POST', '/session/ses_plain/message?directory=%2Fhome%2Fu%2Fscratch', { parts: [{ type: 'text', text: 'hi' }] })
+  const r = oc.rules.get('/session/ses_plain') || []
+  assert.equal(effective(r, 'edit', `n/${key}/notes/*`), 'allow', 'relative to the worktree "/" — no leading slash')
+  assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'ask', 'unknown model → closed')
 })
 
 test('NOTES: without the plugin installed the connector adds nothing', async (t) => {
