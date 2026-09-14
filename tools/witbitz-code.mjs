@@ -136,13 +136,13 @@ async function serve(args) {
     process.on('exit', stop)
     for (let i = 0; i < 40 && !(await isListening(port)); i++) await new Promise((r) => setTimeout(r, 250))
   }
-  let proxy = null
-  try { proxy = await startConfidentialProxy({ port: proxyPortFor(port) }) } catch (e) {
+  let proxy = null, c = null
+  try { proxy = await startConfidentialProxy({ port: proxyPortFor(port), onProgress: (ev) => { if (c) c.progress(ev) } }) } catch (e) {
     console.error(`witbitz-code: could not start the confidential-model proxy on 127.0.0.1:${proxyPortFor(port)} (${(e && e.code) || (e && e.message)})`)
   }
   if (proxy && !child) console.error(`witbitz-code: OpenCode was already running, so its TrustedRouter calls do not go through the confidential-model proxy and its subagents do not ask for approval — restart it with witbitz-code serve for both`)
   if (proxy && child && hasTrustedRouter()) console.error(`witbitz-code: confidential models are enforced (min_privacy + verified receipts)${tinfoilKey() ? ' and read images through Tinfoil' : ' — add a Tinfoil key (witbitz-code tinfoil-key) for them to read images'}`)
-  const c = await startConnector({ pairings: mine })
+  c = await startConnector({ pairings: mine })
   console.error(`witbitz-code: serving ${mine.map((p) => `"${p.name}" → ${p.account || 'account'}`).join(', ')} through the sealed relay (Ctrl-C to stop)`)
   const bye = () => { c.stop(); if (proxy) proxy.close(); process.exit(0) }
   process.on('SIGINT', bye); process.on('SIGTERM', bye)

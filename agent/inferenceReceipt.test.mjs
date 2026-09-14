@@ -138,6 +138,22 @@ test('minted receipt: refuse matrix — each guarded field fails closed by name'
   }
 })
 
+test('minted receipt: explainLapse still refuses a lapsed window, and says whether everything else held', async () => {
+  const lapsed = { upstream: { tier: 'tee-verified', policy: 'tinfoil-snp-dual-source-v1', verified_at: SEC - 900, verification_expires_at: SEC - 1 } }
+  _resetGatewayAttestCache()
+  assert.deepEqual(await run(await mintReceipt({ claims: lapsed }), { explainLapse: true }), { ok: false, error: 'receipt_verification_window', lapsedOnly: true })
+  _resetGatewayAttestCache()
+  assert.deepEqual(await run(await mintReceipt({ claims: lapsed })), { ok: false, error: 'receipt_verification_window' }, 'without the option: as before')
+  _resetGatewayAttestCache()
+  const worse = await run(await mintReceipt({ claims: lapsed, att: await mintAtt({}, 'f'.repeat(64)) }), { explainLapse: true })
+  assert.deepEqual(worse, { ok: false, error: 'receipt_key_uncommitted' }, 'a lapsed window never hides a worse fault')
+  _resetGatewayAttestCache()
+  const untimed = await run(await mintReceipt({ claims: { upstream: { tier: 'tee-verified', policy: 'tinfoil-snp-dual-source-v1' } } }), { explainLapse: true })
+  assert.deepEqual(untimed, { ok: false, error: 'receipt_verification_window' }, 'no window at all is not a lapse')
+  _resetGatewayAttestCache()
+  assert.equal((await run(await mintReceipt(), { explainLapse: true })).ok, true)
+})
+
 test('minted receipt: image digest pin applies to the receipt attestation too', async () => {
   _resetGatewayAttestCache()
   assert.equal((await run(await mintReceipt(), { digests: ['sha256:' + 'c'.repeat(64)] })).error, 'receipt_att_attest_unpinned_image')

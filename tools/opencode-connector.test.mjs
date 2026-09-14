@@ -108,6 +108,12 @@ test('the computer says hello when a client arrives', async (t) => {
   assert.ok(await until(() => got.some((m) => m.t === 'hello' && m.name === 'test-box' && m.computerId === 'cmp_test')), JSON.stringify(got))
 })
 
+test('the confidential proxy\'s progress reaches the phones, sealed (what a slow confidential model is doing)', async (t) => {
+  const { got, connector } = await rig(t)
+  connector.progress({ sessionID: 'ses_1', model: 'moonshotai/kimi-k3', label: 'Kimi K3', phase: 'writing', attempt: 1, tool: 'write', subject: '/home/u/a.md', chars: 1200 })
+  assert.ok(await until(() => got.some((m) => m.t === 'progress' && m.phase === 'writing' && m.subject === '/home/u/a.md' && typeof m.ts === 'number')), JSON.stringify(got))
+})
+
 test('a request is forwarded to OpenCode with the LOCAL password and the answer comes back sealed', async (t) => {
   const { oc, call } = await rig(t)
   const r = await call('GET', '/agent')

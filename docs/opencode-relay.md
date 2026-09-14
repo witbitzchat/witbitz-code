@@ -139,6 +139,7 @@ Every WebSocket text message the peers exchange (i.e. everything except the rela
 | client | `cancel` | `id`, `k` | abandon a pending `req` (the connector aborts its local fetch; `res 499`) |
 | client | `ping` | — | **as built:** asks for a `hello` now (sent on connect and when the peer count rises) |
 | client | `unsub` | `c`, `k`, `p` | this client stops watching `p` |
+| computer | `progress` | `sessionID`, `label`, `phase` (waiting · answering · writing · checking · retrying · end), `attempt`, `tool`/`subject`/`chars` while writing, `ts` | what the confidential-model proxy is doing for a session (§13) — shown on the working line, never passed to OpenCode |
 
 **Multiple devices at once** (phone + desktop): the relay broadcasts, so every client receives every `res` and `evt`.
 Clients ignore `res` whose `id` they did not send; everyone applies `evt`, which is exactly the shared-live-session
@@ -341,6 +342,18 @@ connector (`opencode-serve.sh`) and by `witbitz-code serve`; OpenCode's TrustedR
   `~/.opencode-server.env` (read per request; `witbitz-code tinfoil-key` stores it). Converted text is cached by content
   (OpenCode re-sends the conversation every step). No key / no attestation / rejected key ⇒ the turn is refused with a plain
   reason; the file is never sent elsewhere. Those models are declared `attachment: true` so OpenCode passes the image on.
-- Honest limits: text already streamed before a failing receipt stays visible (it is marked failed and never acted on); a
-  lapsed upstream verification window (~1% in rooms, where it is retried) surfaces as a retryable refusal here; the Python
-  connector has no proxy yet.
+- **The lapsed proof (2026-09-14, owner: "I sometimes get this").** TrustedRouter proves the model's enclave on a 900 s
+  cycle, takes that proof when a call STARTS and signs the receipt when it ENDS — so any call still running when its proof
+  expires fails `receipt_verification_window` (both logged cases: signed 2 s and 74 s past the end). It is the one reason
+  asked again (`agent/attestedRetry.mjs`), with a fresh nonce and the whole check: (a) nothing had reached OpenCode →
+  asked again unseen; an answer that starts within 90 s of the last proof's end is held back whole for that; (b) words
+  already shown AND `verifyInferenceReceipt(…, { explainLapse: true })` says every other check held → asked again held
+  back, and only the new answer's tool calls / finish / usage are passed on (its words would repeat the screen). No tool
+  call of a refused answer ever reaches OpenCode; a second lapse, or any other fault, refuses for real.
+- **Progress** (`onProgress` → connector → `{ t: 'progress', sessionID, label, phase, attempt, tool?, subject?, chars? }`
+  → `codeProgress.js`): waiting for the first word, writing a tool call (name, the file it names, size — never contents),
+  checking the receipt, asking again. Sent beside OpenCode, not through it: 1.18.30's AI SDK (`openai-compatible`
+  `flush()`) emits a `tool-call` for EVERY tool call still open when a stream closes, so a tool call's start forwarded
+  early would run a tool from a refused answer. OpenCode names the session on provider calls (`X-Session-Id`).
+- Honest limits: text already streamed before a failing receipt stays visible (it is marked failed and never acted on,
+  and after a lapse-only retry it stays as the answer's words); the Python connector has no proxy yet.

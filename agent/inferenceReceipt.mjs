@@ -63,8 +63,10 @@ const sseDataV1 = (datas) => sha256(Buffer.concat(datas.flatMap((d) => [d, Buffe
 const commitHex = (xB64u) => createHash('sha256').update(Buffer.concat([Buffer.from(KEY_COMMIT_PREFIX), Buffer.from([0]), Buffer.from(xB64u, 'base64url')])).digest('hex')
 
 /** Verify the captured receipt against what we sent/received. Returns { ok:true, claims, kid, imageDigest } or
- *  { ok:false, error } — never throws. `now` in ms; `fetchImpl`/`digests` flow to the attestation verifier. */
-export async function verifyInferenceReceipt({ capture, requestBody, nonce, now = Date.now(), fetchImpl = fetch, digests, policies } = {}) {
+ *  { ok:false, error } — never throws. `now` in ms; `fetchImpl`/`digests` flow to the attestation verifier.
+ *  `explainLapse`: a receipt whose ONLY fault is the verification window still refuses, but the rest is checked too and
+ *  `lapsedOnly: true` says everything else held (the Code proxy keeps an answer's already-shown words on that basis). */
+export async function verifyInferenceReceipt({ capture, requestBody, nonce, now = Date.now(), fetchImpl = fetch, digests, policies, explainLapse = false } = {}) {
   try {
     const r = capture && capture.receipt
     if (!r || typeof r.protected !== 'string' || typeof r.payload !== 'string' || typeof r.signature !== 'string') return { ok: false, error: 'receipt_missing' }
@@ -94,13 +96,16 @@ export async function verifyInferenceReceipt({ capture, requestBody, nonce, now 
     if (up.tier !== 'tee-verified') return { ok: false, error: 'receipt_upstream_unverified' }
     const allow = policies instanceof Set ? policies : allowedPolicies()
     if (!allow.has(up.policy)) return { ok: false, error: 'receipt_policy_unlisted' }
-    if (!(Number.isFinite(up.verified_at) && Number.isFinite(up.verification_expires_at) && up.verified_at <= c.iat && c.iat < up.verification_expires_at)) return { ok: false, error: 'receipt_verification_window' }
+    const timed = Number.isFinite(up.verified_at) && Number.isFinite(up.verification_expires_at)
+    const inWindow = timed && up.verified_at <= c.iat && c.iat < up.verification_expires_at
+    if (!inWindow && !(explainLapse && timed)) return { ok: false, error: 'receipt_verification_window' }
     // The signing key must be the one the ATTESTED gateway committed to: hex(C) ∈ att.eat_nonce, att itself valid
     // under the same policy as the session gate (Google-signed, TDX, secboot, debug-off, operator project, pins).
     const att = await verifyConfidentialSpaceJwt(header.att, { fetchImpl, now, ...(digests ? { digests } : {}) })
     if (!att.ok) return { ok: false, error: 'receipt_att_' + att.error }
     const nonces = Array.isArray(att.claims.eat_nonce) ? att.claims.eat_nonce : [att.claims.eat_nonce]
     if (!nonces.map((n) => String(n || '').toLowerCase()).includes(commitHex(jwk.x))) return { ok: false, error: 'receipt_key_uncommitted' }
+    if (!inWindow) return { ok: false, error: 'receipt_verification_window', lapsedOnly: true }
     return { ok: true, claims: c, kid: header.kid, imageDigest: att.imageDigest }
   } catch (e) { return { ok: false, error: 'receipt_' + String((e && e.message) || e).slice(0, 80) } }
 }

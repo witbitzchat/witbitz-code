@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   startConfidentialProxy, confidentialModels, stampFloor, unreadableParts, convertUnreadable, makeTinfoilReader,
-  makeAnswerGate, proxyConfig, proxyPortFor, HOLD_BEFORE_LAPSE_SEC,
+  makeAnswerGate, proxyConfig, proxyPortFor, HOLD_BEFORE_LAPSE_SEC, withoutWords,
 } from './code-confidential.mjs'
 import { _resetGatewayAttestCache } from '../agent/gatewayAttest.mjs'
 import { verifyInferenceReceipt } from '../agent/inferenceReceipt.mjs'
@@ -98,7 +98,7 @@ test('a lapsed proof before anything reached OpenCode is asked again, with a fre
   assert.match(logs.join('\n'), /REFUSED deepseek\/deepseek-v4-flash — receipt_verification_window[\s\S]*↻/)
 })
 
-test('an answer already streaming when its proof lapsed is not asked again — no text twice, and the message says what to do', async (t) => {
+test('an answer already streaming whose receipt does not say everything else held is not asked again — no text twice, and the message says what to do', async (t) => {
   const { net, post } = await proxy(t, { verify: lapsing(1), sleep: noWait })
   const text = await (await post(SAY_OK)).text()
   assert.equal(net.calls.length, 1)
@@ -133,6 +133,94 @@ test('a proof far from its end streams live; asked again and lapsed again is a r
   const live = makeAnswerGate()
   assert.equal(live.push('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n').length, 1)
   assert.equal(makeAnswerGate({ hold: true }).push('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n').length, 0)
+})
+
+// An agent's step as the wire streams it: a line of narration, then a file written by a tool call (measured on a real turn).
+const frame = (o) => `data: ${JSON.stringify(o)}\n\n`
+const toolStep = (words, callId) => [
+  frame({ id: `chatcmpl-${callId}`, choices: [{ index: 0, delta: { role: 'assistant', content: words } }] }),
+  frame({ id: `chatcmpl-${callId}`, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: 'write', arguments: '' } }] } }] }),
+  frame({ id: `chatcmpl-${callId}`, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"filePath":"/home/u/תיקייה 1/תיקון.md","content":"שלום' } }] } }] }),
+  frame({ id: `chatcmpl-${callId}`, choices: [{ index: 0, delta: { content: null, tool_calls: [{ index: 0, function: { arguments: ' עולם"}' } }] } }] }),
+  frame({ id: `chatcmpl-${callId}`, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
+  frame({ id: `chatcmpl-${callId}`, choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } }),
+  'data: [DONE]\n\n',
+].join('')
+function scriptedNet(streams) {
+  const calls = []
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, headers: init.headers || {}, body: init.body })
+    const bytes = new TextEncoder().encode(streams[Math.min(calls.length, streams.length) - 1])
+    const body = new ReadableStream({ start(c) { for (let i = 0; i < bytes.length; i += 61) c.enqueue(bytes.slice(i, i + 61)); c.close() } })
+    return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  return { calls, fetchImpl }
+}
+const verdicts = (...list) => { let n = 0; const seen = []; const fn = async (args) => { seen.push(args); return list[Math.min(n++, list.length - 1)] }; fn.seen = seen; return fn }
+const LAPSED_ONLY = { ok: false, error: 'receipt_verification_window', lapsedOnly: true }
+const VERIFIED = { ok: true, claims: { upstream: { verification_expires_at: Math.floor(META.nowMs / 1000) + 800 } } }
+const SESSION = { 'x-session-id': 'ses_abc', 'x-parent-session-id': 'ses_parent' }
+
+test('words already shown + a receipt whose ONLY fault is the window: asked again, the words stay, only the new answer\'s actions are used', async (t) => {
+  const net = scriptedNet([toolStep('I will rewrite the document.', 'call_1'), toolStep('Rewriting it now.', 'call_2')])
+  const verify = verdicts(LAPSED_ONLY, VERIFIED)
+  const { post } = await proxy(t, { net, verify, sleep: noWait })
+  const text = await (await post(SAY_OK, SESSION)).text()
+  assert.equal(net.calls.length, 2)
+  assert.equal(verify.seen[0].explainLapse, true, 'the proxy asks whether everything else held')
+  assert.equal(count(text, /I will rewrite the document\./g), 1, 'the first answer\'s words, shown once')
+  assert.ok(!text.includes('Rewriting it now.'), 'the second answer\'s words would repeat what is on screen')
+  assert.ok(!text.includes('"call_1"'), 'no tool call from the refused answer reaches OpenCode')
+  assert.equal(count(text, /"id":"call_2","type":"function"/g), 1, 'the verified answer\'s tool call does')
+  assert.match(text, /"finish_reason":"tool_calls"[\s\S]*"total_tokens":3[\s\S]*data: \[DONE\]/)
+  assert.ok(!text.includes('"error"'), text)
+})
+
+test('words already shown + a lapsed window with ANOTHER fault: refused, not asked again', async (t) => {
+  const net = scriptedNet([toolStep('I will rewrite the document.', 'call_1')])
+  const { post } = await proxy(t, { net, verify: verdicts({ ok: false, error: 'receipt_verification_window' }), sleep: noWait })
+  const text = await (await post(SAY_OK, SESSION)).text()
+  assert.equal(net.calls.length, 1)
+  assert.match(text, /Send your message again/)
+  assert.ok(!text.includes('"call_1"'))
+})
+
+test('asked again after words were shown and lapsed again: a real refusal, and still no tool call', async (t) => {
+  const net = scriptedNet([toolStep('I will rewrite the document.', 'call_1'), toolStep('Rewriting it now.', 'call_2')])
+  const { post } = await proxy(t, { net, verify: verdicts(LAPSED_ONLY, LAPSED_ONLY), sleep: noWait })
+  const text = await (await post(SAY_OK, SESSION)).text()
+  assert.equal(net.calls.length, 2, 'once more, not a loop')
+  assert.match(text, /receipt_verification_window/)
+  assert.ok(!text.includes('"call_1"') && !text.includes('"call_2"') && !text.includes('[DONE]'))
+})
+
+test('progress: waiting, answering, the tool call being written (name and file, never its contents), checking, asking again, end', async (t) => {
+  const events = []
+  const net = scriptedNet([toolStep('I will rewrite the document.', 'call_1'), toolStep('Rewriting it now.', 'call_2')])
+  const { post } = await proxy(t, { net, verify: verdicts(LAPSED_ONLY, VERIFIED), sleep: noWait, onProgress: (e) => events.push(e) })
+  await (await post(SAY_OK, SESSION)).text()
+  const phases = events.map((e) => `${e.attempt}:${e.phase}`).filter((p, i, a) => p !== a[i - 1]) // a tool call is re-reported as it grows
+  assert.deepEqual(phases, ['1:waiting', '1:answering', '1:writing', '1:checking', '2:retrying', '2:waiting', '2:writing', '2:checking', '2:end'])
+  assert.equal(events.find((e) => e.phase === 'writing').subject, '', 'named before its file has arrived whole')
+  const w = events.filter((e) => e.phase === 'writing' && e.attempt === 1).pop()
+  assert.deepEqual({ ...w, chars: 0 }, { sessionID: 'ses_abc', parentID: 'ses_parent', model: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash', phase: 'writing', attempt: 1, tool: 'write', subject: '/home/u/תיקייה 1/תיקון.md', chars: 0 })
+  assert.ok(!JSON.stringify(events).includes('שלום'), 'the file\'s contents are never reported')
+  assert.ok(events[0].bytes > 0)
+  const quiet = []
+  const other = await proxy(t, { net: scriptedNet([toolStep('x', 'c')]), verify: verdicts(VERIFIED), onProgress: (e) => quiet.push(e) })
+  await (await other.post(SAY_OK)).text()
+  assert.equal(quiet.length, 0, 'no session named, nothing to report')
+})
+
+test('withoutWords keeps tool calls, the finish, usage and [DONE]; drops words and a bare role', () => {
+  assert.equal(withoutWords(frame({ choices: [{ index: 0, delta: { role: 'assistant', content: 'hi' } }] })), '')
+  assert.equal(withoutWords(frame({ choices: [{ index: 0, delta: { reasoning_content: 'hmm' } }] })), '')
+  const mixed = withoutWords(frame({ choices: [{ index: 0, delta: { content: 'x', tool_calls: [{ index: 0, id: 'c' }] } }] }))
+  assert.deepEqual(JSON.parse(mixed.slice(5)).choices[0].delta, { tool_calls: [{ index: 0, id: 'c' }] })
+  const fin = frame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+  assert.equal(withoutWords(fin), fin)
+  assert.match(withoutWords(frame({ choices: [{ index: 0, delta: { content: '' }, finish_reason: 'stop' }] })), /"finish_reason":"stop"/)
+  assert.equal(withoutWords('data: [DONE]\n\n'), 'data: [DONE]\n\n')
 })
 
 test('a caller that did not ask to stream gets one verified chat.completion', async (t) => {

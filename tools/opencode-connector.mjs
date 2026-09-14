@@ -79,7 +79,12 @@ export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImp
   const running = []
   try { const n = pruneAttachments(attachRoot); if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`) } catch { /* no folder yet */ }
   for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, notesConfidentialList }))
-  return { peers: running.map((r) => r.peer), stop: () => { for (const r of running) r.stop() } }
+  return {
+    peers: running.map((r) => r.peer),
+    /** What the confidential-model proxy is doing for a session (code-confidential.mjs onProgress), to the phones. */
+    progress: (ev) => { for (const r of running) if (r.peer.peers >= 2) r.peer.send({ t: 'progress', ...ev, ts: Date.now() }).catch(() => {}) },
+    stop: () => { for (const r of running) r.stop() },
+  }
 }
 
 const NOTES_PLUGIN = join(homedir(), '.config', 'opencode', 'plugins', 'witbitz-notes.js') // installed by tools/opencode-config.mjs
@@ -373,7 +378,7 @@ export async function main(argv = process.argv.slice(2)) {
   // catalog calls confidential really runs in the confidential pool, receipt-verified, and gets pictures through Tinfoil.
   const proxyPort = proxyPortFor(pi >= 0 ? Number(args[pi + 1]) : 4096)
   let proxy = null
-  try { proxy = await startConfidentialProxy({ port: proxyPort }); console.error(`opencode-connector: confidential models via 127.0.0.1:${proxy.port}`) } catch (e) { console.error(`opencode-connector: could not start the confidential-model proxy on 127.0.0.1:${proxyPort} (${(e && e.code) || (e && e.message)}) — TrustedRouter calls from OpenCode will fail until it can`) }
+  try { proxy = await startConfidentialProxy({ port: proxyPort, onProgress: (ev) => c.progress(ev) }); console.error(`opencode-connector: confidential models via 127.0.0.1:${proxy.port}`) } catch (e) { console.error(`opencode-connector: could not start the confidential-model proxy on 127.0.0.1:${proxyPort} (${(e && e.code) || (e && e.message)}) — TrustedRouter calls from OpenCode will fail until it can`) }
   const bye = () => { c.stop(); if (proxy) proxy.close(); process.exit(0) }
   process.on('SIGINT', bye); process.on('SIGTERM', bye)
   const pp = args.indexOf('--parent')

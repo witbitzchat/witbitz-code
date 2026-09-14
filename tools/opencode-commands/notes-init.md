@@ -5,4 +5,4 @@ Look at this project: its stack, its layout, and how to build, test and lint it 
 
 Write what you find into the "Project" section of the project instructions file named in your system prompt under "Project instructions", replacing its placeholder line. Keep it short and factual. Do not create or change AGENTS.md or CLAUDE.md inside the project itself.
 
-Then write one first note in the notes folder named there (for example build.md with the commands that work) and list it in that folder's INDEX.md with a one-line description.
+Do not write notes for this: the build and test commands belong in the Project section. Notes are for what the code cannot tell a future session — the person's corrections, decisions and their reasons, traps that cost effort.

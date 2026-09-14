@@ -24,6 +24,13 @@
 //          streaming as a proof lapses is refused (the owner: "I sometimes get this"). A fresh call re-runs the whole
 //          check. It can only be asked again while nothing of the refused answer has reached OpenCode — so an answer
 //          that STARTS near the end of the last proof seen is held back whole (like a tool call) instead of streamed.
+//          When words WERE already shown and the receipt's only fault is the window (every other check held), it is still
+//          asked again — held back, and only the new answer's ACTIONS are passed on (its words would repeat what is on
+//          screen). The shown words stay; no tool from the refused answer ever reaches OpenCode.
+//       5. What it is doing is reported (onProgress → the connector → the page): waiting for the first word, writing a
+//          tool call (name, file, size — never its contents), checking the receipt, asking again. OpenCode never sees
+//          these: its AI SDK runs every tool call left unfinished when a stream closes, so a tool call's start cannot be
+//          shown through OpenCode before the receipt verifies.
 //
 // Who pays: the user — TrustedRouter with their key (OpenCode's own), Tinfoil with theirs. Witbitz is not on this path.
 import http from 'node:http'
@@ -141,6 +148,16 @@ export function makeAnswerGate({ hold = false } = {}) {
   const capture = newSseCapture()
   const held = []
   let holding = hold, buf = ''
+  const calls = [] // index → { name, args } as the held tool calls arrive — for progress only, never forwarded from here
+  const track = (ev) => {
+    const d = ev && ev.choices && ev.choices[0] && ev.choices[0].delta
+    for (const t of (d && d.tool_calls) || []) {
+      const ix = typeof t.index === 'number' ? t.index : calls.length
+      const c = calls[ix] || (calls[ix] = { name: '', args: '' })
+      if (t.function && typeof t.function.name === 'string') c.name += t.function.name
+      if (t.function && typeof t.function.arguments === 'string') c.args += t.function.arguments
+    }
+  }
   const live = (ev) => {
     if (!ev || ev.error || ev.usage) return false
     const ch = ev.choices && ev.choices[0]
@@ -166,6 +183,7 @@ export function makeAnswerGate({ hold = false } = {}) {
         let ev = null
         if (payload !== '[DONE]') { try { ev = JSON.parse(payload) } catch { /* hashed above; never forwarded as-is */ } }
         if (ev && ev.inference_receipt) continue
+        track(ev)
         if (!holding && ev && live(ev)) { out.push(`data: ${payload}\n\n`); continue }
         holding = true
         held.push(`data: ${payload}\n\n`)
@@ -173,8 +191,40 @@ export function makeAnswerGate({ hold = false } = {}) {
       return out
     },
     held: () => held,
+    /** The tool call being written now: { tool, subject, chars } — the subject is the file, path or command when its JSON
+     *  string has arrived whole. null before any. */
+    writing: () => {
+      const c = calls.filter(Boolean).pop()
+      if (!c || !c.name) return null
+      return { tool: c.name, subject: subjectOf(c.args.slice(0, SUBJECT_SCAN)), chars: c.args.length } // a path comes first; a 100 KB file's body is not re-scanned per chunk
+    },
     events: () => capture.datas.map((b) => { try { return JSON.parse(b.toString('utf8')) } catch { return null } }).filter(Boolean),
   }
+}
+
+const SUBJECT_SCAN = 4000
+const SUBJECT = /"(filePath|path|command|pattern|url)"\s*:\s*"((?:[^"\\]|\\.)*)"/
+function subjectOf(args) {
+  const m = SUBJECT.exec(args)
+  if (!m) return ''
+  try { return String(JSON.parse(`"${m[2]}"`)).slice(0, 200) } catch { return '' }
+}
+
+/** A held frame without the answer's words (content, reasoning) — for an answer asked again after words were shown.
+ *  '' when nothing but words (or a bare role) is left. */
+export function withoutWords(frame) {
+  const line = String(frame).split('\n').find((l) => l.startsWith('data:'))
+  const payload = line ? line.slice(5).trim() : ''
+  if (!payload || payload === '[DONE]') return frame
+  let ev
+  try { ev = JSON.parse(payload) } catch { return '' }
+  const ch = ev && Array.isArray(ev.choices) && ev.choices[0]
+  if (!ch || !ch.delta) return frame
+  const { content, reasoning_content: rc, reasoning, ...rest } = ch.delta
+  if (content == null && rc == null && reasoning == null) return frame
+  const left = Object.keys(rest).filter((k) => k !== 'role')
+  if (!left.length && !ch.finish_reason && !ev.usage) return ''
+  return `data: ${JSON.stringify({ ...ev, choices: [{ ...ch, delta: rest }, ...ev.choices.slice(1)] })}\n\n`
 }
 
 /** The streamed events as one chat.completion — for a caller that asked without `stream`. */
@@ -220,6 +270,7 @@ export function tinfoilKey(envFile = process.env.OPENCODE_ENV_FILE || join(homed
 // An answer that starts this close to the end of the last proof seen for its model is held back whole. Longer answers
 // that start earlier can still straddle a renewal; those end with the refusal below, which says to send again.
 export const HOLD_BEFORE_LAPSE_SEC = 90
+export const PROGRESS_EVERY_MS = 1500 // a tool call being written is reported at most this often (and when it changes)
 export const RETRY_DELAY_MS = 600 // the beat the gateway needs to finish the renewal the lapsed call set off
 
 /** The receipt's own timing, for the log only (never trusted: the verdict comes from verifyInferenceReceipt). */
@@ -255,7 +306,7 @@ const readBody = (req) => new Promise((resolve, reject) => {
 export function startConfidentialProxy({
   port = 0, host = '127.0.0.1', upstream = TR_UPSTREAM, fetchImpl = fetch, models = confidentialModels(),
   gate, nonce = newReceiptNonce, now = () => Date.now(), key = tinfoilKey, reader, log = console.error, policies,
-  verify = verifyInferenceReceipt, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  verify = verifyInferenceReceipt, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), onProgress = () => {},
 } = {}) {
   const proofEnds = new Map() // model → verification_expires_at (s) of its last VERIFIED receipt
   let gateCache = null
@@ -304,16 +355,25 @@ export function startConfidentialProxy({
     // ── a confidential model ──
     const label = `${conf.label} (confidential)`
     const wantsStream = body.stream === true
+    // Who is asking: OpenCode names the session on every provider call (X-Session-Id; measured in 1.18.30's bundle).
+    const sessionID = String(req.headers['x-session-id'] || req.headers['x-session-affinity'] || '').slice(0, 100)
+    const parentID = String(req.headers['x-parent-session-id'] || '').slice(0, 100)
+    let attempt = 1
+    const tell = (phase, extra = {}) => {
+      if (!sessionID) return
+      try { onProgress({ sessionID, ...(parentID ? { parentID } : {}), model: body.model, label: conf.label, phase, attempt, ...extra }) } catch { /* progress must never fail a call */ }
+    }
     try {
       if (!conf.vision) ({ body } = await convertUnreadable(body, { label, toText: toTextFor() }))
       const g = await checkGateway()
       if (!g || !g.ok) throw refuse(502, `${label}: TrustedRouter's gateway did not prove it runs attested code (${(g && g.error) || 'no attestation'}), so nothing was sent.`, 'gateway_unattested')
-      const once = async (attempt) => {
+      const once = async ({ wordsShown = false } = {}) => {
         const ends = proofEnds.get(body.model)
         const hold = attempt > 1 || (ends !== undefined && now() / 1000 >= ends - HOLD_BEFORE_LAPSE_SEC)
         const n = nonce()
         const bytes = JSON.stringify(stampFloor(body))
         const headers = { ...forwardHeaders(req.headers), 'content-type': 'application/json', 'x-inference-receipt': n }
+        tell('waiting', { bytes: bytes.length })
         const up = await fetchImpl(target, { method: 'POST', headers, body: bytes, signal: ctrl.signal })
         if (!up.ok) {
           const text = await up.text()
@@ -324,37 +384,52 @@ export function startConfidentialProxy({
         const answer = makeAnswerGate({ hold })
         if (wantsStream && !res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
         const dec = new TextDecoder()
-        let streamed = false
+        let streamed = false, told = '', toldAt = 0
         for await (const c of up.body) {
           const frames = answer.push(dec.decode(c, { stream: true }))
-          if (wantsStream && frames.length) { for (const f of frames) res.write(f); streamed = true }
+          if (wantsStream && frames.length) { for (const f of frames) res.write(f); if (!streamed) tell('answering'); streamed = true }
+          const w = answer.writing()
+          if (w) {
+            const key = `${w.tool}\0${w.subject}`, at = Date.now()
+            if (key !== told || at - toldAt >= PROGRESS_EVERY_MS) { told = key; toldAt = at; tell('writing', w) }
+          }
         }
         answer.push(dec.decode() + '\n\n')
-        const v = await verify({ capture: answer.capture, requestBody: bytes, nonce: n, now: now(), fetchImpl, ...(policies ? { policies } : {}) })
+        tell('checking')
+        const v = await verify({ capture: answer.capture, requestBody: bytes, nonce: n, now: now(), fetchImpl, explainLapse: true, ...(policies ? { policies } : {}) })
         if (!v.ok) {
-          log(`code-confidential: REFUSED ${body.model} — ${v.error}${v.error === RETRYABLE ? receiptTiming(answer.capture) : ''}${hold ? ' (held back)' : streamed ? ' (after streaming)' : ''}`)
+          log(`code-confidential: REFUSED ${body.model} — ${v.error}${v.error === RETRYABLE ? receiptTiming(answer.capture) : ''}${hold ? ' (held back)' : streamed ? ' (after streaming)' : ''}${v.lapsedOnly ? ' (every other check held)' : ''}`)
           const e = refuse(502, refusalMessage(label, v.error), 'receipt_unverified')
-          e.streamed = streamed
+          e.streamed = streamed || wordsShown
+          e.lapsedOnly = v.lapsedOnly === true
           throw e
         }
         const exp = v.claims && v.claims.upstream && v.claims.upstream.verification_expires_at
         if (Number.isFinite(exp)) proofEnds.set(body.model, exp)
-        if (wantsStream) { for (const f of answer.held()) res.write(f); res.end(); return }
+        if (wantsStream) {
+          for (const f of answer.held()) { const out = wordsShown ? withoutWords(f) : f; if (out) res.write(out) }
+          res.end(); return
+        }
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify(completionOf(answer.events(), body.model)))
       }
       try {
-        await once(1)
+        await once()
       } catch (e) {
-        if (ctrl.signal.aborted || e.streamed || !isRetryableReceiptFailure(e)) throw e
-        log(`code-confidential: ↻ ${body.model} — ${RETRYABLE}, nothing had reached OpenCode; asking once more`)
+        // Asked again only for the window, and — when words already reached OpenCode — only if nothing else was wrong.
+        if (ctrl.signal.aborted || !isRetryableReceiptFailure(e) || (e.streamed && !e.lapsedOnly)) throw e
+        log(`code-confidential: ↻ ${body.model} — ${RETRYABLE}; ${e.streamed ? 'the words already shown stay, and only the new answer\'s actions are used' : 'nothing had reached OpenCode'}; asking once more`)
+        attempt = 2
+        tell('retrying')
         await sleep(RETRY_DELAY_MS)
         if (ctrl.signal.aborted) return
-        await once(2) // verified again from scratch, or it refuses for real
+        await once({ wordsShown: e.streamed }) // verified again from scratch, or it refuses for real
       }
     } catch (e) {
       if (ctrl.signal.aborted) return
       fail(e, wantsStream)
+    } finally {
+      tell('end')
     }
   })
 

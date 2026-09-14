@@ -27,6 +27,7 @@ export function directTransport({ base, pass, fetchImpl = (...a) => fetch(...a) 
     can: () => false, // Auto mode lives in the connector — a direct server has none
     autoSessions: () => [],
     onAuto: () => () => {},
+    onProgress: () => () => {}, // the confidential-model proxy lives in the connector too
     setAuto: () => false,
     kick: () => {},
     close: () => {},
@@ -80,6 +81,7 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
   let autoList = []
   const autoListeners = new Set()
   const tellAuto = (e) => { for (const fn of autoListeners) { try { fn(e) } catch { /* */ } } }
+  const progressListeners = new Set() // what a confidential model is doing (codeProgress.js)
   let resubTimer = 0
   let freshTimer = 0
 
@@ -133,6 +135,7 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     onPeers: (n) => { if (n < 2) lastHello = 0; else peer.send({ t: 'ping' }); changed() },
     onMessage: (m) => {
       if (m.t === 'hello') { onHello(m); return }
+      if (m.t === 'progress') { for (const fn of progressListeners) { try { fn(m) } catch { /* */ } } return }
       if (m.t === 'autoverdict') { if (typeof m.sessionID === 'string' && typeof m.action === 'string') tellAuto({ kind: 'verdict', verdict: m }); return }
       if (m.t === 'res') {
         const e = pending.get(m.id)
@@ -181,13 +184,14 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     can: (cap) => caps.includes(cap),
     autoSessions: () => [...autoList],
     onAuto(fn) { autoListeners.add(fn); return () => autoListeners.delete(fn) },
+    onProgress(fn) { progressListeners.add(fn); return () => progressListeners.delete(fn) },
     /** Switch Auto for one session on the computer (nonce-checked there). The next hello confirms it. */
     setAuto(sid, dir, on) { if (!nonce || !caps.includes('auto')) return false; peer.send({ t: 'auto', k: nonce, sid, dir, on: !!on }); return true },
     kick: () => peer.kick(),
     close() {
       clearInterval(resubTimer); clearInterval(freshTimer); clearTimeout(giveUpTimer)
       for (const e of pending.values()) { clearTimeout(e.timer); e.resolve({ ok: false, status: 0, json: null, text: 'closed' }) }
-      pending.clear(); subs.clear(); listeners.clear(); autoListeners.clear()
+      pending.clear(); subs.clear(); listeners.clear(); autoListeners.clear(); progressListeners.clear()
       peer.stop()
     },
     async request(method, p, body) {
