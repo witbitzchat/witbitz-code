@@ -6,6 +6,7 @@ differ from the app's while carrying the same text — the tests decode it with 
 
 from __future__ import annotations
 
+import os
 import segno
 
 QUIET = 4  # modules of white margin; below ~4 a scanner loses the finder patterns
@@ -16,14 +17,25 @@ def qr_modules(text: str) -> list[list[bool]]:
     return [[bool(bit) for bit in row] for row in qr.matrix_iter(scale=1, border=0)]
 
 
-def render_ansi(rows: list[list[bool]]) -> str:
-    """Each module is two spaces, dark on a white background via ANSI, so it scans on a dark terminal too."""
-    dark, light = "\x1b[40m  \x1b[0m", "\x1b[47m  \x1b[0m"
-    blank = light * (len(rows) + QUIET * 2)
-    pad = light * QUIET
-    lines = [blank] * QUIET
-    lines += [pad + "".join(dark if d else light for d in row) + pad for row in rows]
-    lines += [blank] * QUIET
+def render_ansi(rows: list[list[bool]], compact: bool | None = None) -> str:
+    """Dark on a white background via ANSI, so it scans on a dark terminal too. Compact by default, like tools/rc-qr.mjs:
+    half blocks, one character per module across and two modules per line ("▀": top in the foreground colour, bottom in
+    the background) — a quarter of the two-spaces-per-module drawing. WITBITZ_QR=large (or compact=False) draws that one."""
+    if compact is None:
+        compact = os.environ.get("WITBITZ_QR") != "large"
+    size = len(rows)
+    dim = size + QUIET * 2
+
+    def dark(r: int, c: int) -> bool:
+        return QUIET <= r < QUIET + size and QUIET <= c < QUIET + size and bool(rows[r - QUIET][c - QUIET])
+
+    if not compact:
+        on, off = "\x1b[40m  \x1b[0m", "\x1b[47m  \x1b[0m"
+        return "\n".join("".join(on if dark(r, c) else off for c in range(dim)) for r in range(dim))
+    lines = []
+    for r in range(0, dim, 2):
+        cells = "".join(f"\x1b[{30 if dark(r, c) else 97};{40 if dark(r + 1, c) else 107}m▀" for c in range(dim))
+        lines.append(cells + "\x1b[0m")
     return "\n".join(lines)
 
 

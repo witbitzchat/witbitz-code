@@ -73,7 +73,7 @@ witbitz-code serve
 ```
 
 Commands, in both: `pair`, `serve [--port N]`, `status`, `rotate`, `unpair [--account EMAIL]`, `version`. The Node build
-also has `setup`, `service install|uninstall|status`, `trustedrouter-key` and `tinfoil-key`, and runs the
+also has `setup`, `uninstall`, `service install|uninstall|status`, `trustedrouter-key` and `tinfoil-key`, and runs the
 confidential-model proxy; the Python package has none of these yet.
 
 ## Verify the download is this source

@@ -15,7 +15,7 @@
 //     real case: setup then runs serve in the window.
 // Nothing here prints a key. Keys are written 0600 through writeSecret (temp file + rename).
 import { spawnSync } from 'node:child_process'
-import { readFileSync, existsSync, mkdirSync, copyFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, copyFileSync, writeFileSync, rmSync, chmodSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 
@@ -72,6 +72,21 @@ export function withAuthKey(text, provider, key) {
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('auth.json is not a JSON object')
   }
   return JSON.stringify({ ...doc, [provider]: { type: 'api', key } }, null, 2) + '\n'
+}
+
+// ── pairings and ports ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The OpenCode port a pairing points at (the connector's rule: tools/opencode-connector.mjs pairingsForPort). 0 = unusable. */
+export function pairingPort(p) {
+  try { const u = new URL((p && p.opencodeUrl) || 'http://127.0.0.1:4096'); return Number(u.port || (u.protocol === 'https:' ? 443 : 80)) } catch { return 0 }
+}
+
+/** The pairings file with one pairing (same account room and computer) pointed at another local OpenCode port. Pure. */
+export function withPairingPort(doc, pairing, port) {
+  if (!validPort(port)) throw new Error(`bad port ${port}`)
+  const list = doc && Array.isArray(doc.pairings) ? doc.pairings : []
+  const same = (x) => x && x.idx && pairing.idx && x.idx.room === pairing.idx.room && x.computerId === pairing.computerId
+  return { ...doc, pairings: list.map((x) => (same(x) ? { ...x, opencodeUrl: `http://127.0.0.1:${port}` } : x)) }
 }
 
 // ── keeping it running: a systemd user unit (Linux) or a launchd agent (macOS) ──────────────────────────────────────────
@@ -133,6 +148,11 @@ export function launchdPlist({ node, script, port, path, home }) {
 `
 }
 
+/** Ports of the witbitz-code services installed in a folder (the unnamed one is 4096). */
+function portsFrom(dir, re) {
+  try { return readdirSync(dir).map((f) => f.match(re)).filter(Boolean).map((m) => (m[1] ? Number(m[1]) : 4096)).filter(validPort).sort((a, b) => a - b) } catch { return [] }
+}
+
 const runCmd = (cmd, args) => {
   const r = spawnSync(cmd, args, { encoding: 'utf8' })
   return { status: r.error ? -1 : r.status, stdout: r.stdout || '', stderr: r.stderr || '' }
@@ -178,6 +198,7 @@ export function serviceManager({ platform = process.platform, home = homedir(), 
         sc('daemon-reload')
         return { ok: true }
       },
+      installedPorts: () => portsFrom(dir, /^witbitz-code(?:-(\d+))?\.service$/),
       logsHint: (port) => `journalctl --user -u ${serviceName(port)} -f`,
       extraHint: 'It starts when you log in. To keep it running while you are logged out: loginctl enable-linger $USER',
     }
@@ -211,6 +232,7 @@ export function serviceManager({ platform = process.platform, home = homedir(), 
         rmSync(plist(port), { force: true })
         return { ok: true }
       },
+      installedPorts: () => portsFrom(join(home, 'Library', 'LaunchAgents'), /^chat\.witbitz\.code(?:\.(\d+))?\.plist$/),
       logsHint: (port) => `tail -f ~/Library/Logs/${serviceName(port)}.log`,
       extraHint: 'It starts when you log in.',
     }
@@ -224,6 +246,7 @@ export function serviceManager({ platform = process.platform, home = homedir(), 
     install: () => ({ ok: false, why: 'unsupported platform' }),
     restart: () => false,
     uninstall: () => ({ ok: true, noop: true }),
+    installedPorts: () => [],
     logsHint: () => '',
     extraHint: '',
   }
@@ -282,13 +305,14 @@ async function askKey({ io, label, check }) {
 
 /**
  * The whole setup. `d` holds every outside effect, so the flow is tested end to end with fakes:
- *   io { say, ask, secret } · port · name · findOpenCode() → path|'' · installOpenCode() → boolean
- *   pairings() → [] (for this port) · pair() · hasTrustedRouter() · saveTrustedRouterKey(key) · tinfoilKey()
- *   saveTinfoilKey(key) · checkTrustedRouter(key) · checkTinfoil(key) · isListening() · service (serviceManager())
- *   serviceArgs { node, script, path } · bundled · serveHere()
+ *   io { say, ask, secret } · port · portExplicit (--port given) · findOpenCode() → path|'' · installOpenCode() → boolean
+ *   allPairings() → [] · portOf(pairing) → number · pair(port) · movePairing(pairing, port) · hasTrustedRouter()
+ *   saveTrustedRouterKey(key) · tinfoilKey() · saveTinfoilKey(key) · checkTrustedRouter(key) · checkTinfoil(key)
+ *   isListening(port) · service (serviceManager()) · serviceArgs { node, script, path } · bundled · serveHere(port)
  */
 export async function runSetup(d) {
-  const { io, port } = d
+  const { io } = d
+  let port = d.port
   const result = { opencode: false, paired: false, trustedrouter: false, tinfoil: false, running: '' }
   io.say(`witbitz-code setup — five steps; anything already done is skipped.\n`)
 
@@ -312,14 +336,42 @@ export async function runSetup(d) {
 
   // 2 — pairing
   io.say('\n2. This computer and your Witbitz account')
-  let mine = d.pairings()
+  // A pairing belongs to one OpenCode port. Already paired for another port: without --port, use that one; with --port and a
+  // single pairing, offer to move it (the port lives only in this computer's pairings file — no scan). Before this, setup
+  // showed the QR again, the scan "refreshed" the pairing on its old port, and setup said pairing did not finish.
+  const on = (list, p) => list.filter((x) => d.portOf(x) === p)
+  const named = (list) => list.map((p) => `"${p.name}" → ${p.account || 'your account'}`).join(', ')
+  let all = d.allPairings()
+  if (all.length && !on(all, port).length) {
+    const ports = [...new Set(all.map((p) => d.portOf(p)))]
+    if (!d.portExplicit && ports.length === 1) {
+      port = ports[0]
+      io.say(`   This computer is paired for OpenCode on port ${port} — using that port.`)
+    } else if (!d.portExplicit) {
+      io.say(`   This computer is paired for OpenCode on ports ${ports.join(', ')}. Run setup for the one you mean: node witbitz-code.mjs setup --port <port>`)
+      return { ...result, stopped: 'ports' }
+    } else if (all.length === 1) {
+      const p = all[0]
+      if (yes(await io.ask(`   ${named([p])} is set up for OpenCode on port ${d.portOf(p)}. Use port ${port} instead? [Y/n] `))) {
+        d.movePairing(p, port)
+        all = d.allPairings()
+      }
+    }
+  }
+  let mine = on(all, port)
   if (!mine.length) {
     io.say('   On your phone, open Spaces → Settings → Back up & recovery → Add a device, and scan the code below.\n')
-    await d.pair()
-    mine = d.pairings()
-    if (!mine.length) { io.say('   ✖ Pairing did not finish. Run setup again to retry.'); return { ...result, stopped: 'pair' } }
+    await d.pair(port)
+    all = d.allPairings()
+    mine = on(all, port)
+    if (!mine.length) {
+      io.say(all.length
+        ? `   ✖ This computer is paired, but for OpenCode on another port (${all.map((p) => `"${p.name}": ${d.portOf(p)}`).join(', ')}). Run setup again with that port: node witbitz-code.mjs setup --port ${d.portOf(all[0])}`
+        : '   ✖ Pairing did not finish. Run setup again to retry.')
+      return { ...result, stopped: 'pair' }
+    }
   }
-  io.say(`   ✓ Paired: ${mine.map((p) => `"${p.name}" → ${p.account || 'your account'}`).join(', ')}`)
+  io.say(`   ✓ Paired: ${named(mine)}${port !== 4096 ? ` (OpenCode on port ${port})` : ''}`)
   result.paired = true
 
   // 3 — TrustedRouter
@@ -361,11 +413,12 @@ export async function runSetup(d) {
     else io.say('   ✓ Already running in the background')
     result.running = 'service'
   } else {
-    while (await d.isListening()) {
+    while (await d.isListening(port)) {
       io.say(`   Something is already running on 127.0.0.1:${port} — most likely an OpenCode you started yourself.`)
       io.say('   Close it (and any opencode window attached to it). Started that way, its TrustedRouter calls are not protected.')
+      io.say(`   If it belongs to someone else on this computer, use another port instead: node witbitz-code.mjs setup --port ${port + 1}`)
       const a = await io.ask('   Press Enter when it is closed, or type s to stop here: ')
-      if (/^s/i.test(a)) { io.say(`   Stopped. When it is closed, run: node witbitz-code.mjs setup`); return { ...result, stopped: 'busy' } }
+      if (/^s/i.test(a)) { io.say(`   Stopped. When it is closed, run setup again.`); return { ...result, stopped: 'busy' } }
     }
     if (svc.available() && d.bundled) {
       if (yes(await io.ask('   Start witbitz-code now and every time you log in? [Y/n] '))) {
@@ -373,7 +426,7 @@ export async function runSetup(d) {
         if (r.ok) {
           io.say(`   ✓ Running in the background. Logs: ${svc.logsHint(port)}`)
           if (svc.extraHint) io.say(`     ${svc.extraHint}`)
-          io.say('     Stop it with: node witbitz-code.mjs service uninstall')
+          io.say('     Stop it with: node witbitz-code.mjs service uninstall · remove everything: node witbitz-code.mjs uninstall')
           result.running = 'service'
         } else io.say(`   ✖ Could not start it in the background (${r.why}).`)
       }
@@ -384,6 +437,91 @@ export async function runSetup(d) {
   if (result.running === 'service') { io.say('\nDone. Open Spaces → ☰ → Code on your phone.'); return result }
   io.say('\nDone. Starting witbitz-code in this window — keep it open (Ctrl-C stops it). Open Spaces → ☰ → Code on your phone.\n')
   result.running = 'here'
-  await d.serveHere()
+  await d.serveHere(port)
   return result
+}
+
+// ── uninstall ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** An env file's text without the given keys; every other line kept verbatim. Pure. */
+export function withoutEnvKeys(text, keys) {
+  const drop = new RegExp(`^\\s*(?:export\\s+)?(?:${keys.join('|')})=`)
+  const kept = String(text || '').split(/\r?\n/).filter((l) => !drop.test(l))
+  while (kept.length && kept[kept.length - 1] === '') kept.pop()
+  return kept.length ? kept.join('\n') + '\n' : ''
+}
+
+/** auth.json text without one provider; every other provider kept. Throws on a file that is not a JSON object. */
+export function withoutAuthKey(text, provider) {
+  const doc = text && String(text).trim() ? JSON.parse(text) : {}
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new Error('auth.json is not a JSON object')
+  const { [provider]: _gone, ...rest } = doc
+  return JSON.stringify(rest, null, 2) + '\n'
+}
+
+/**
+ * `witbitz-code uninstall` (the owner: "we should also have an uninstall option"). Removes what witbitz-code put on this
+ * computer; asks before the things that are the person's own — saved keys, project notes, OpenCode's sessions (Enter keeps
+ * each). `d`:
+ *   io { say, ask } · yes (--yes: no confirmation) · removeKeys / removeNotes / removeSessions (--remove-… flags)
+ *   service (serviceManager()) · allPairings() · unpair(pairing) → { ok, why } · codeDir · script (the downloaded file, or
+ *   '' from the repository) · hasKeys() → names[] · deleteKeys() · removePath(path)
+ *   notes() → { root, folders, pluginFiles[] } · sessions() → { dir, exists } · deleteSessions() · openCodeRunning() → ports[]
+ */
+export async function runUninstall(d) {
+  const { io, service: svc } = d
+  const ports = svc.installedPorts()
+  const pairings = d.allPairings()
+  const keys = d.hasKeys()
+  const notes = d.notes()
+  const sessions = d.sessions()
+  io.say('witbitz-code uninstall — removes witbitz-code from this computer.\n')
+  io.say('This will:')
+  if (ports.length) io.say(`  • stop the background service${ports.length > 1 ? 's' : ''} and stop ${ports.length > 1 ? 'them' : 'it'} starting with the computer`)
+  if (pairings.length) io.say(`  • remove this computer from ${[...new Set(pairings.map((p) => p.account || 'your account'))].join(', ')} — your devices stop showing it`)
+  io.say(`  • delete ${d.codeDir} (the pairing secrets, files you attached in Code, the Auto-mode log)`)
+  if (notes.pluginFiles.length) io.say(`  • remove the project-notes plugin from OpenCode (${notes.pluginFiles.length} file${notes.pluginFiles.length > 1 ? 's' : ''}), so no new notes are written`)
+  if (d.script) io.say(`  • delete ${d.script}`)
+  io.say('It keeps OpenCode and your projects — and, unless you say so next, your keys, notes and sessions.\n')
+  if (!d.yes && !/^y/i.test(await io.ask('Continue? [y/N] '))) { io.say('Nothing changed.'); return { done: false } }
+
+  const ask = async (flag, show, q) => (flag ? true : show && !d.yes ? /^y/i.test(await io.ask(q)) : false)
+  const trNote = keys.some((k) => /TrustedRouter/.test(k)) ? ' OpenCode would then no longer reach TrustedRouter.' : ''
+  const removeKeys = keys.length ? await ask(d.removeKeys, true, `Also remove your saved ${keys.join(' and ')}?${trNote} [y/N] `) : false
+  const removeNotes = notes.folders ? await ask(d.removeNotes, true, `Also delete your project notes — ${notes.folders} project folder${notes.folders > 1 ? 's' : ''} in ${notes.root}? [y/N] `) : false
+  let removeSessions = sessions.exists ? await ask(d.removeSessions, true, `Also delete ALL OpenCode sessions on this computer — every conversation, from Code and from the OpenCode app (${sessions.dir}; your provider logins stay)? [y/N] `) : false
+
+  const left = []
+  for (const port of ports) {
+    const r = svc.uninstall(port)
+    io.say(r.ok ? `✓ Background service${port !== 4096 ? ` for port ${port}` : ''} stopped and removed` : `✖ Could not remove the background service for port ${port} (${r.why})`)
+  }
+  // Sessions: a running OpenCode holds its database open and would write it back — never delete under it. Asked here, after
+  // the services (which run OpenCode) are stopped and before anything else goes, so "close it" can still be acted on.
+  while (removeSessions) {
+    const running = await d.openCodeRunning()
+    if (!running.length) break
+    io.say(`OpenCode is still running (127.0.0.1:${running.join(', ')}). Close it — the terminal running it, or the OpenCode app — to delete the sessions.`)
+    if (d.yes) { io.say('✖ Keeping the OpenCode sessions.'); removeSessions = false; break }
+    if (/^k/i.test(await io.ask('Press Enter when it is closed, or type k to keep the sessions: '))) removeSessions = false
+  }
+  for (const p of pairings) {
+    let r
+    try { r = await d.unpair(p) } catch (e) { r = { ok: false, why: (e && e.message) || String(e) } }
+    if (r.ok) io.say(`✓ Removed "${p.name}" from ${p.account || 'your account'}${r.noop ? ' (it was not listed)' : ''}`)
+    else { io.say(`✖ Could not remove "${p.name}" from ${p.account || 'your account'} (${r.why})`); left.push(p) }
+  }
+  if (removeKeys) { d.deleteKeys(); io.say(`✓ Removed the saved ${keys.join(' and ')}`) }
+  for (const f of notes.pluginFiles) d.removePath(f)
+  if (notes.pluginFiles.length) io.say('✓ Removed the project-notes plugin from OpenCode')
+  if (removeNotes) { d.removePath(notes.root); io.say(`✓ Deleted ${notes.root}`) }
+  if (removeSessions) { d.deleteSessions(); io.say(`✓ Deleted the OpenCode sessions in ${sessions.dir} (provider logins kept)`) }
+  d.removePath(d.codeDir)
+  io.say(`✓ Deleted ${d.codeDir}`)
+  if (d.script) { d.removePath(d.script); io.say(`✓ Deleted ${d.script}`) }
+  io.say('')
+  if (!ports.length && pairings.length) io.say('If witbitz-code is still running in a terminal window, close that window (Ctrl-C).')
+  if (left.length) io.say(`Your phone may still list ${left.map((p) => `"${p.name}"`).join(', ')}: open Code → Settings → Remove there.`)
+  io.say('witbitz-code is removed. OpenCode is still installed — to remove it too: npm uninstall -g opencode-ai')
+  return { done: true, left: left.length }
 }

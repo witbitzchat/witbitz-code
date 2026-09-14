@@ -60,6 +60,16 @@ test('pairing an account adds an entry with its own id and secret; pairing it ag
   assert.equal(rotated.entry.computerId, 'cmp_1', 'rotation keeps the computer'); assert.notEqual(rotated.entry.secret, first.entry.secret, 'and replaces the secret')
 })
 
+test('pairing an account again FOR ANOTHER OpenCode moves it there; without asking, it keeps the one it had', () => {
+  // setup --port 4097 on an account paired for 4096: the scan "refreshed" the entry and kept 4096, so setup never found it
+  const first = upsertPairing(null, { account: 'me@x', idx: IDX, name: 'test-box' })
+  const moved = upsertPairing(first.doc, { account: 'me@x', idx: IDX, opencodeUrl: 'http://127.0.0.1:4097' })
+  assert.equal(moved.entry.opencodeUrl, 'http://127.0.0.1:4097')
+  assert.equal(moved.entry.secret, first.entry.secret, 'the same pairing — nothing to re-publish')
+  assert.equal(moved.doc.pairings.length, 1)
+  assert.equal(upsertPairing(moved.doc, { account: 'me@x', idx: IDX }).entry.opencodeUrl, 'http://127.0.0.1:4097')
+})
+
 test('a second account is a SEPARATE pairing — and the tool knows when both reach the same OpenCode', () => {
   const a = upsertPairing(null, { account: 'me@x', idx: IDX })
   const b = upsertPairing(a.doc, { account: 'work@y', idx: IDX2 })

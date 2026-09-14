@@ -78,7 +78,7 @@ export function normPairings(doc) {
 }
 
 /** Add this computer for an account, or refresh the existing entry (same id + secret unless `rotate`). Pure. */
-export function upsertPairing(doc, { account, idx, name, relay = RELAY_URL, opencodeUrl = 'http://127.0.0.1:4096' }, { rotate = false, mintId = newComputerId, mintSecret = newRelaySecret } = {}) {
+export function upsertPairing(doc, { account, idx, name, relay = RELAY_URL, opencodeUrl = '' }, { rotate = false, mintId = newComputerId, mintSecret = newRelaySecret } = {}) {
   const cur = normPairings(doc)
   const i = cur.pairings.findIndex((p) => p.idx.room === idx.room)
   const prev = i >= 0 ? cur.pairings[i] : null
@@ -89,7 +89,9 @@ export function upsertPairing(doc, { account, idx, name, relay = RELAY_URL, open
     secret: prev && !rotate ? prev.secret : mintSecret(),
     name: name || (prev && prev.name) || hostname(),
     relay,
-    opencodeUrl: (prev && prev.opencodeUrl) || opencodeUrl,
+    // An OpenCode asked for (`pair --port 4097`) wins; not asked → the entry keeps the one it had. Keeping the old one even when
+    // asked made `setup --port 4097` fail on an account already paired for 4096: the scan "refreshed" and stayed on 4096.
+    opencodeUrl: opencodeUrl || (prev && prev.opencodeUrl) || 'http://127.0.0.1:4096',
   }
   const pairings = cur.pairings.slice()
   if (i >= 0) pairings[i] = entry; else pairings.push(entry)
@@ -215,6 +217,14 @@ async function publishEntry(e) {
   if (!l.ok) console.log(`opencode-pair: ⚠ could not clear the old direct-server settings (${l.why}) — harmless while a computer is paired`)
   else if (!l.noop) console.log('opencode-pair: ✓ cleared the old direct-server address from the account (devices use the relay now)')
   return true
+}
+
+/** Remove one pairing from its account (every signed-in device drops the computer), then from this computer. For
+ *  `witbitz-code uninstall`, which must report a failure and carry on — main() exits. → { ok, why } */
+export async function unpairEntry(p) {
+  const r = await unpublishComputer({ call, idx: p.idx, computerId: p.computerId })
+  if (r.ok) writePairings(removePairings(readPairings(), p.account).doc)
+  return r
 }
 
 export async function main(argv = process.argv.slice(2)) {

@@ -5,21 +5,28 @@ import { qrModules } from '../spaces/public/qrRender.js'
 
 const QUIET = 4 // modules of white margin; below ~4 a scanner loses the finder patterns
 
-/** A scannable QR for the terminal: each module = two spaces, dark on a white background via ANSI, with a quiet zone.
- *  White-background (not the terminal's theme) so it scans on a dark terminal too. */
-export function qrAnsi(text) {
+/** A scannable QR for the terminal, dark on a white ground via ANSI (not the terminal's theme, so it scans on a dark
+ *  terminal too), with a quiet zone. Compact by default (the owner: "make the QR shown in the terminal smaller"): half
+ *  blocks — one character is one module wide and two tall ("▀": top module in the foreground colour, bottom in the
+ *  background) — a quarter of the old two-spaces-per-module area, and modules stay square because a terminal cell is
+ *  about twice as tall as it is wide. WITBITZ_QR=large (or { compact: false }) draws the old one, for a terminal whose
+ *  font renders ▀ badly. */
+export function qrAnsi(text, { compact = process.env.WITBITZ_QR !== 'large' } = {}) {
   const { size, isDark } = qrModules(text)
-  const DARK = '\x1b[40m  \x1b[0m' // black bg, two spaces
-  const LIGHT = '\x1b[47m  \x1b[0m' // white bg
-  const rowStr = (cells) => cells.map((d) => (d ? DARK : LIGHT)).join('')
+  const dim = size + QUIET * 2
+  const dark = (r, c) => r >= QUIET && c >= QUIET && r < QUIET + size && c < QUIET + size && isDark(r - QUIET, c - QUIET)
   const lines = []
-  const blank = new Array(size + QUIET * 2).fill(false)
-  for (let i = 0; i < QUIET; i++) lines.push(rowStr(blank))
-  for (let r = 0; r < size; r++) {
-    const cells = [...Array(QUIET).fill(false), ...Array.from({ length: size }, (_, c) => isDark(r, c)), ...Array(QUIET).fill(false)]
-    lines.push(rowStr(cells))
+  if (!compact) {
+    const DARK = '\x1b[40m  \x1b[0m' // black bg, two spaces
+    const LIGHT = '\x1b[47m  \x1b[0m' // white bg
+    for (let r = 0; r < dim; r++) lines.push(Array.from({ length: dim }, (_, c) => (dark(r, c) ? DARK : LIGHT)).join(''))
+    return lines.join('\n')
   }
-  for (let i = 0; i < QUIET; i++) lines.push(rowStr(blank))
+  for (let r = 0; r < dim; r += 2) {
+    let line = ''
+    for (let c = 0; c < dim; c++) line += `\x1b[${dark(r, c) ? 30 : 97};${dark(r + 1, c) ? 40 : 107}m▀`
+    lines.push(line + '\x1b[0m')
+  }
   return lines.join('\n')
 }
 

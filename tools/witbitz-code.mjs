@@ -12,13 +12,14 @@
 //   node witbitz-code.mjs tinfoil-key              store TINFOIL_API_KEY (read confidentially what a confidential model cannot see)
 //   node witbitz-code.mjs trustedrouter-key        store the TrustedRouter key in OpenCode's credentials (what `opencode auth login` does)
 //   node witbitz-code.mjs service install|uninstall|status [--port 4096]   start with the computer (systemd / launchd)
+//   node witbitz-code.mjs uninstall [--yes] [--remove-keys|notes|sessions]   remove witbitz-code (keeps OpenCode)
 import { spawn, spawnSync } from 'node:child_process'
-import { main as pairMain, envSet, writeSecret } from './opencode-pair.mjs'
-import { startConnector, loadPairings, parseEnvPassword, pairingsForPort } from './opencode-connector.mjs'
+import { main as pairMain, envSet, writeSecret, unpairEntry } from './opencode-pair.mjs'
+import { startConnector, loadPairings, parseEnvPassword, pairingsForPort, PAIRINGS_PATH } from './opencode-connector.mjs'
 import { startConfidentialProxy, proxyPortFor, proxyConfig, tinfoilKey } from './code-confidential.mjs'
 import { policyConfig, mergeConfig } from './code-opencode-policy.mjs'
-import { runSetup, serviceManager, readLine, validKeyShape, checkTinfoilKey, checkTrustedRouterKey, authPath, withAuthKey } from './code-setup.mjs'
-import { readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { runSetup, runUninstall, serviceManager, readLine, validKeyShape, checkTinfoilKey, checkTrustedRouterKey, authPath, withAuthKey, withoutAuthKey, withoutEnvKeys, pairingPort, withPairingPort } from './code-setup.mjs'
+import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +43,10 @@ const HELP = `witbitz-code ${VERSION} — reach OpenCode on this computer from t
   trustedrouter-key            store your TrustedRouter API key in OpenCode's credentials (same as opencode auth login)
   service install|uninstall|status [--port <n>]
                                start witbitz-code with the computer (systemd user service on Linux, launchd on macOS)
+  uninstall [--yes] [--remove-keys] [--remove-notes] [--remove-sessions]
+                               remove witbitz-code from this computer: the background service, this computer from your
+                               accounts, its files — and, if you say so, the saved keys, project notes and OpenCode
+                               sessions. OpenCode and your projects stay.
 
 Nothing listens on the network: OpenCode stays on 127.0.0.1 and the connector dials out to wss://code-relay.witbitz.chat.
 `
@@ -159,21 +164,73 @@ async function setup(args) {
     port,
     findOpenCode,
     installOpenCode: () => spawnSync('npm', ['install', '-g', 'opencode-ai'], { stdio: 'inherit' }).status === 0,
-    pairings: () => pairingsForPort(loadPairings(undefined, () => {}), port),
-    pair: () => pairMain([...(name ? ['--name', name] : []), ...(port !== 4096 ? ['--port', String(port)] : [])]),
+    portExplicit: args.includes('--port'),
+    allPairings: () => loadPairings(undefined, () => {}),
+    portOf: pairingPort,
+    // --port always: an OpenCode asked for moves an account already paired (upsertPairing)
+    pair: (p) => pairMain([...(name ? ['--name', name] : []), '--port', String(p)]),
+    movePairing: (p, to) => writeSecret(PAIRINGS_PATH, JSON.stringify(withPairingPort(JSON.parse(readFileSync(PAIRINGS_PATH, 'utf8')), p, to), null, 1) + '\n'),
     hasTrustedRouter: () => hasTrustedRouter(),
     saveTrustedRouterKey,
     checkTrustedRouter: (k) => checkTrustedRouterKey(k),
     tinfoilKey: () => tinfoilKey(),
     saveTinfoilKey,
     checkTinfoil: (k) => checkTinfoilKey(k),
-    isListening: () => isListening(port),
+    isListening: (p) => isListening(p),
     service: serviceManager(),
     // read at step 5 — after step 1 may have put OpenCode's own bin folder on PATH
     get serviceArgs() { return { node: process.execPath, script: fileURLToPath(import.meta.url), path: process.env.PATH || '' } },
     bundled: process.env.WITBITZ_CODE_BUNDLED === '1',
-    serveHere: () => serve(['--port', String(port)]),
+    serveHere: (p) => serve(['--port', String(p)]),
   })
+}
+
+async function uninstall(args) {
+  const yes = args.includes('--yes')
+  if (!yes && !process.stdin.isTTY) { console.error('witbitz-code: uninstall asks before it removes anything — run it in a terminal, or pass --yes'); process.exit(2) }
+  const codeDir = join(homedir(), '.witbitz', 'code')
+  const self = fileURLToPath(import.meta.url)
+  const authFile = authPath()
+  const hasTR = () => { try { return !!JSON.parse(readFileSync(authFile, 'utf8')).trustedrouter } catch { return false } }
+  const r = await runUninstall({
+    io: { say: (m) => console.error(m), ask: (q) => readLine(q) },
+    yes,
+    removeKeys: args.includes('--remove-keys'),
+    removeNotes: args.includes('--remove-notes'),
+    removeSessions: args.includes('--remove-sessions'),
+    service: serviceManager(),
+    allPairings: () => loadPairings(undefined, () => {}),
+    unpair: (p) => unpairEntry(p),
+    codeDir,
+    // the downloaded file deletes itself; run from the repository, the source stays
+    script: process.env.WITBITZ_CODE_BUNDLED === '1' ? self : '',
+    // saved keys only — a key that lives in the shell's environment is not this tool's to remove
+    hasKeys: () => [...(existsSync(ENV_PATH) && /^\s*(?:export\s+)?TINFOIL_API_KEY=/m.test(readFileSync(ENV_PATH, 'utf8')) ? ['Tinfoil key'] : []), ...(hasTR() ? ["TrustedRouter key (in OpenCode's credentials)"] : [])],
+    deleteKeys: () => {
+      if (existsSync(ENV_PATH)) writeSecret(ENV_PATH, withoutEnvKeys(readFileSync(ENV_PATH, 'utf8'), ['TINFOIL_API_KEY']))
+      if (hasTR()) writeSecret(authFile, withoutAuthKey(readFileSync(authFile, 'utf8'), 'trustedrouter'))
+    },
+    removePath: (path) => rmSync(path, { recursive: true, force: true }),
+    // project notes: the folder the witbitz-notes plugin writes, and the plugin files tools/opencode-config.mjs installs
+    notes: () => {
+      const root = process.env.WITBITZ_NOTES_DIR || join(homedir(), '.local', 'share', 'witbitz-notes')
+      const cfg = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
+      let folders = 0
+      try { folders = readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).length } catch { /* none */ }
+      return { root, folders, pluginFiles: [join(cfg, 'plugins', 'witbitz-notes.js'), join(cfg, 'commands', 'notes-init.md'), join(cfg, 'witbitz-confidential-models.json')].filter((f) => existsSync(f)) }
+    },
+    // OpenCode's sessions: its whole data folder except auth.json (the provider logins)
+    sessions: () => { const dir = dirname(authFile); return { dir, exists: existsSync(dir) && readdirSync(dir).some((f) => f !== 'auth.json') } },
+    deleteSessions: () => { const dir = dirname(authFile); for (const f of readdirSync(dir)) if (f !== 'auth.json') rmSync(join(dir, f), { recursive: true, force: true }) },
+    openCodeRunning: async () => {
+      const ports = [...new Set([4096, ...serviceManager().installedPorts(), ...loadPairings(undefined, () => {}).map(pairingPort)])].filter(Boolean)
+      const up = []
+      for (const p of ports) if (await isListening(p)) up.push(p)
+      return up
+    },
+  })
+  // a pairings file kept somewhere else (WITBITZ_CODE_PAIRINGS) goes too once every account let go of this computer
+  if (r.done && !r.left && PAIRINGS_PATH !== join(codeDir, 'pairings.json')) rmSync(PAIRINGS_PATH, { force: true })
 }
 
 async function service(args) {
@@ -207,6 +264,7 @@ switch (cmd) {
   case 'unpair': await pairMain(['--unpair', ...rest]); break
   case 'setup': await setup(rest); break
   case 'service': await service(rest); break
+  case 'uninstall': await uninstall(rest); break
   case 'tinfoil-key': await setKey({ label: 'Tinfoil', check: checkTinfoilKey, save: saveTinfoilKey, where: ENV_PATH, after: 'It is used from the next message — no restart needed.' }); break
   case 'trustedrouter-key': await setKey({ label: 'TrustedRouter', check: checkTrustedRouterKey, save: saveTrustedRouterKey, where: authPath(), after: 'Restart witbitz-code (or its background service) so OpenCode picks it up.' }); break
   case 'version': case '--version': case '-v': console.log(VERSION); break

@@ -88,6 +88,8 @@ def test_upsert_and_remove_semantics_match_js():
       const rot = upsertPairing(again.doc, { account: 'me@x', idx: INPUT.idx, name: 'n' }, { ...mint, rotate: true }); r.push(rot)
       const b = upsertPairing(rot.doc, { account: 'work@y', idx: INPUT.idx2, name: 'w', relay: 'ws://127.0.0.1:1' }, mint); r.push(b)
       const sep = upsertPairing(a.doc, { account: '', idx: INPUT.idx2, name: 'f', opencodeUrl: 'http://127.0.0.1:4097' }, mint); r.push(sep)
+      const moved = upsertPairing(a.doc, { account: 'me@x', idx: INPUT.idx, opencodeUrl: 'http://127.0.0.1:4098' }, mint); r.push(moved)
+      r.push(upsertPairing(moved.doc, { account: 'me@x', idx: INPUT.idx }, mint))
       r.push(removePairings(b.doc, 'work@y')); r.push(removePairings(b.doc, '')); r.push(removePairings(b.doc, 'nobody'))
       r.push(normPairings({ pairings: [{ account: 'no idx', secret: 's', computerId: 'c' }, null, { idx: { room: 'r', mk: 'm' }, secret: 's', computerId: 5 }, { idx: { room: 'r', mk: 'm' }, secret: 's', computerId: 'c' }] }))
       r.push(normPairings('junk'))
@@ -101,6 +103,9 @@ def test_upsert_and_remove_semantics_match_js():
     rot = pp.upsert_pairing(again["doc"], account="me@x", idx=IDX, name="n", rotate=True, **m); r.append(rot)
     b = pp.upsert_pairing(rot["doc"], account="work@y", idx=IDX2, name="w", relay="ws://127.0.0.1:1", **m); r.append(b)
     sep = pp.upsert_pairing(a["doc"], account="", idx=IDX2, name="f", opencode_url="http://127.0.0.1:4097", **m); r.append(sep)
+    # an OpenCode asked for moves an account already paired; not asked, it keeps the one it had
+    moved = pp.upsert_pairing(a["doc"], account="me@x", idx=IDX, opencode_url="http://127.0.0.1:4098", **m); r.append(moved)
+    r.append(pp.upsert_pairing(moved["doc"], account="me@x", idx=IDX, **m))
     r += [pp.remove_pairings(b["doc"], "work@y"), pp.remove_pairings(b["doc"], ""), pp.remove_pairings(b["doc"], "nobody")]
     r.append(pp.norm_pairings({"pairings": [{"account": "no idx", "secret": "s", "computerId": "c"}, None,
                                             {"idx": {"room": "r", "mk": "m"}, "secret": "s", "computerId": 5},
@@ -108,6 +113,7 @@ def test_upsert_and_remove_semantics_match_js():
     r.append(pp.norm_pairings("junk"))
     assert [_js.stringify(x) for x in r] == out
     assert b["sharedWith"] == ["me@x"] and sep["sharedWith"] == []
+    assert moved["entry"]["opencodeUrl"] == "http://127.0.0.1:4098" and r[6]["entry"]["opencodeUrl"] == "http://127.0.0.1:4098"
 
 
 ENV_CASES = [

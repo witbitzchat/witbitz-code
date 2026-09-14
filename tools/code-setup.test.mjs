@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   KEY_PAGES, validKeyShape, checkTrustedRouterKey, checkTinfoilKey, withAuthKey, systemdUnit, launchdPlist, serviceName,
-  launchdLabel, stableScript, serviceManager, runSetup, readLine,
+  launchdLabel, stableScript, serviceManager, runSetup, readLine, pairingPort, withPairingPort, withoutEnvKeys, withoutAuthKey,
+  runUninstall,
 } from './code-setup.mjs'
 import { EventEmitter } from 'node:events'
 
@@ -131,28 +132,37 @@ function fakeSetup(over = {}) {
   const state = { opencode: false, pairings: [], tr: false, tinfoil: '', listening: false, service: 'not installed', installs: [], restarts: 0, served: false, npm: 0, ...over.state }
   const d = {
     io: { say: (m) => said.push(m), ask: async (q) => { said.push(q); return answers.shift() ?? '' }, secret: async (q) => { said.push(q); return secrets.shift() ?? '' } },
-    port: 4096,
+    port: over.port || 4096,
+    portExplicit: !!over.portExplicit,
     findOpenCode: () => (state.opencode ? '/usr/bin/opencode' : ''),
     installOpenCode: () => { state.npm++; state.opencode = over.npmWorks !== false; return state.opencode },
-    pairings: () => state.pairings,
-    pair: async () => { if (over.pairWorks !== false) state.pairings = [{ name: 'laptop', account: 'a@example.com' }] },
+    allPairings: () => state.pairings,
+    portOf: pairingPort,
+    pair: async (port) => {
+      state.pairedFor = port
+      if (over.pairWorks === false) return
+      const url = over.pairKeepsPort ? state.pairings[0].opencodeUrl : `http://127.0.0.1:${port}`
+      state.pairings = [...state.pairings.filter((p) => p.account !== 'a@example.com'), { name: 'laptop', account: 'a@example.com', opencodeUrl: url }]
+    },
+    movePairing: (p, to) => { state.pairings = state.pairings.map((x) => (x === p ? { ...x, opencodeUrl: `http://127.0.0.1:${to}` } : x)); state.moved = to },
     hasTrustedRouter: () => state.tr,
     saveTrustedRouterKey: (k) => { state.trKey = k; state.tr = true },
     checkTrustedRouter: async (k) => (over.trCheck ? over.trCheck(k) : { ok: true }),
     tinfoilKey: () => state.tinfoil,
     saveTinfoilKey: (k) => { state.tinfoil = k },
     checkTinfoil: async () => ({ ok: true }),
-    isListening: async () => { const v = typeof state.listening === 'function' ? state.listening() : state.listening; return v },
+    isListening: async (port) => { state.checkedPort = port; return typeof state.listening === 'function' ? state.listening() : state.listening },
     service: {
       kind: 'systemd', available: () => over.serviceAvailable !== false, unavailableWhy: 'no systemd user session',
       status: () => state.service, outdated: () => !!over.outdated,
       install: (a) => { state.installs.push(a); state.service = 'active'; return { ok: true } },
       restart: () => { state.restarts++; return true },
+      installedPorts: () => [],
       logsHint: () => 'journalctl --user -u witbitz-code -f', extraHint: 'It starts when you log in.',
     },
     serviceArgs: { node: '/usr/bin/node', script: '/dl/witbitz-code.mjs', path: '/usr/bin' },
     bundled: over.bundled !== false,
-    serveHere: async () => { state.served = true },
+    serveHere: async (port) => { state.served = port },
   }
   return { d, said, state, text: () => said.join('\n') }
 }
@@ -211,7 +221,7 @@ test('no background start (WSL without systemd, or "n"): it runs in this window 
   const f = fakeSetup({ serviceAvailable: false, state: { opencode: true, pairings: [{ name: 'l' }], tr: true, tinfoil: 'tk' } })
   const r = await runSetup(f.d)
   assert.equal(r.running, 'here')
-  assert.equal(f.state.served, true)
+  assert.equal(f.state.served, 4096)
   assert.match(f.text(), /Background start is not available: no systemd user session/)
   const no = fakeSetup({ answers: ['n'], state: { opencode: true, pairings: [{ name: 'l' }], tr: true, tinfoil: 'tk' } })
   assert.equal((await runSetup(no.d)).running, 'here')
@@ -261,4 +271,215 @@ test('a visible answer echoes as typed; control characters are ignored; a chunk 
   input.emit('data', 'n\u001b\ro-more')
   assert.equal(await got, 'n')
   assert.equal(output.text, '[Y/n] n\n')
+})
+
+// ── the owner's test: setup on another port, for a computer already paired for 4096 ─────────────────────────────────────
+
+const PAIRED_4096 = { name: 'test-box', account: 'a@example.com', idx: { room: 'r1' }, computerId: 'c1', opencodeUrl: 'http://127.0.0.1:4096' }
+
+test('setup --port 4097 on a computer paired for 4096: offers to move it — no second scan, and it runs on 4097', async () => {
+  const f = fakeSetup({ port: 4097, portExplicit: true, answers: ['', ''], state: { opencode: true, pairings: [PAIRED_4096], tr: true, tinfoil: 'tk' } })
+  const r = await runSetup(f.d)
+  assert.equal(r.paired, true)
+  assert.equal(f.state.moved, 4097)
+  assert.equal(f.state.pairedFor, undefined, 'no QR')
+  assert.match(f.text(), /"test-box" → a@example\.com is set up for OpenCode on port 4096\. Use port 4097 instead\?/)
+  assert.match(f.text(), /✓ Paired: "test-box" → a@example\.com \(OpenCode on port 4097\)/)
+  assert.equal(f.state.checkedPort, 4097)
+  assert.equal(f.state.installs[0].port, 4097)
+})
+
+test('the same, answering no: the scan pairs for 4097 (an OpenCode asked for moves the account) and setup finds it', async () => {
+  const f = fakeSetup({ port: 4097, portExplicit: true, answers: ['n', ''], state: { opencode: true, pairings: [PAIRED_4096], tr: true, tinfoil: 'tk' } })
+  const r = await runSetup(f.d)
+  assert.equal(f.state.pairedFor, 4097)
+  assert.equal(r.paired, true)
+  assert.doesNotMatch(f.text(), /Pairing did not finish/)
+})
+
+test('if a scan still leaves the pairing on another port, setup says which port — not "did not finish"', async () => {
+  const f = fakeSetup({ port: 4097, portExplicit: true, pairKeepsPort: true, answers: ['n'], state: { opencode: true, pairings: [PAIRED_4096], tr: true, tinfoil: 'tk' } })
+  const r = await runSetup(f.d)
+  assert.equal(r.stopped, 'pair')
+  assert.match(f.text(), /paired, but for OpenCode on another port \("laptop": 4096\)\. Run setup again with that port: node witbitz-code\.mjs setup --port 4096/)
+  assert.doesNotMatch(f.text(), /Pairing did not finish/)
+})
+
+test('plain setup on a computer paired for 4097 uses 4097 — no QR, and the service and checks follow it', async () => {
+  const f = fakeSetup({ answers: [''], state: { opencode: true, pairings: [{ ...PAIRED_4096, opencodeUrl: 'http://127.0.0.1:4097' }], tr: true, tinfoil: 'tk' } })
+  await runSetup(f.d)
+  assert.equal(f.state.pairedFor, undefined)
+  assert.match(f.text(), /paired for OpenCode on port 4097 — using that port/)
+  assert.equal(f.state.installs[0].port, 4097)
+  const two = fakeSetup({ state: { opencode: true, pairings: [{ ...PAIRED_4096, opencodeUrl: 'http://127.0.0.1:4097' }, { ...PAIRED_4096, idx: { room: 'r2' }, opencodeUrl: 'http://127.0.0.1:4098' }], tr: true, tinfoil: 'tk' } })
+  assert.equal((await runSetup(two.d)).stopped, 'ports')
+  assert.match(two.text(), /ports 4097, 4098\. Run setup for the one you mean/)
+})
+
+test('an OpenCode that is someone else\'s: the busy-port message offers another port', async () => {
+  const f = fakeSetup({ answers: ['s'], state: { opencode: true, pairings: [PAIRED_4096], tr: true, tinfoil: 'tk', listening: true } })
+  await runSetup(f.d)
+  assert.match(f.text(), /If it belongs to someone else on this computer, use another port instead: node witbitz-code\.mjs setup --port 4097/)
+})
+
+test('a pairing is moved by account room and computer, pointed at 127.0.0.1; ports read like the connector reads them', () => {
+  const doc = { v: 1, pairings: [PAIRED_4096, { ...PAIRED_4096, idx: { room: 'r2' }, account: 'b@example.com' }] }
+  const moved = withPairingPort(doc, PAIRED_4096, 4097)
+  assert.deepEqual(moved.pairings.map((p) => p.opencodeUrl), ['http://127.0.0.1:4097', 'http://127.0.0.1:4096'])
+  assert.throws(() => withPairingPort(doc, PAIRED_4096, 70000))
+  assert.equal(pairingPort({}), 4096)
+  assert.equal(pairingPort({ opencodeUrl: 'http://127.0.0.1:4097/' }), 4097)
+  assert.equal(pairingPort({ opencodeUrl: 'https://h' }), 443)
+  assert.equal(pairingPort({ opencodeUrl: 'not a url' }), 0)
+})
+
+// ── uninstall ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+function fakeUninstall(over = {}) {
+  const said = []
+  const answers = [...(over.answers || [])]
+  const state = { ports: over.ports ?? [4096], pairings: over.pairings ?? [PAIRED_4096], removedServices: [], unpaired: [], keysDeleted: false, removed: [], sessionsDeleted: false }
+  const d = {
+    io: { say: (m) => said.push(m), ask: async (q) => { said.push(q); return answers.shift() ?? '' } },
+    yes: !!over.yes,
+    removeKeys: !!over.removeKeys,
+    removeNotes: !!over.removeNotes,
+    removeSessions: !!over.removeSessions,
+    notes: () => over.notes ?? { root: '/home/u/.local/share/witbitz-notes', folders: 0, pluginFiles: [] },
+    sessions: () => over.sessions ?? { dir: '/home/u/.local/share/opencode', exists: false },
+    deleteSessions: () => { state.sessionsDeleted = true },
+    openCodeRunning: async () => over.running ?? [],
+    service: { installedPorts: () => state.ports, uninstall: (p) => { state.removedServices.push(p); return { ok: true } } },
+    allPairings: () => state.pairings,
+    unpair: async (p) => { if (over.offline) return { ok: false, why: 'network error' }; state.unpaired.push(p.account); return { ok: true } },
+    codeDir: '/home/u/.witbitz/code',
+    script: '/home/u/witbitz-code.mjs',
+    hasKeys: () => over.keys ?? ['Tinfoil key', "TrustedRouter key (in OpenCode's credentials)"],
+    deleteKeys: () => { state.keysDeleted = true },
+    removePath: (p) => state.removed.push(p),
+  }
+  return { d, state, text: () => said.join('\n') }
+}
+
+test('uninstall says what it will remove and what it keeps, and changes nothing without a yes', async () => {
+  const f = fakeUninstall({ answers: [''] })
+  assert.deepEqual(await runUninstall(f.d), { done: false })
+  const t = f.text()
+  assert.match(t, /stop the background service and stop it starting with the computer/)
+  assert.match(t, /remove this computer from a@example\.com — your devices stop showing it/)
+  assert.match(t, /delete \/home\/u\/\.witbitz\/code/)
+  assert.match(t, /It keeps OpenCode and your projects — and, unless you say so next, your keys, notes and sessions/)
+  assert.match(t, /Nothing changed/)
+  assert.deepEqual([f.state.removedServices, f.state.unpaired, f.state.removed], [[], [], []])
+})
+
+test('uninstall, yes: service, account, files and the download go; keys only when asked', async () => {
+  const f = fakeUninstall({ ports: [4096, 4097], answers: ['y', ''] })
+  const r = await runUninstall(f.d)
+  assert.deepEqual(r, { done: true, left: 0 })
+  assert.deepEqual(f.state.removedServices, [4096, 4097])
+  assert.deepEqual(f.state.unpaired, ['a@example.com'])
+  assert.deepEqual(f.state.removed, ['/home/u/.witbitz/code', '/home/u/witbitz-code.mjs'])
+  assert.equal(f.state.keysDeleted, false, 'Enter keeps the keys')
+  assert.match(f.text(), /npm uninstall -g opencode-ai/)
+  const keys = fakeUninstall({ answers: ['y', 'y'] })
+  await runUninstall(keys.d)
+  assert.equal(keys.state.keysDeleted, true)
+})
+
+test('uninstall --yes asks nothing and keeps the keys unless --remove-keys', async () => {
+  const f = fakeUninstall({ yes: true })
+  await runUninstall(f.d)
+  assert.equal(f.state.keysDeleted, false)
+  assert.equal(f.text().includes('[y/N]'), false)
+  const k = fakeUninstall({ yes: true, removeKeys: true })
+  await runUninstall(k.d)
+  assert.equal(k.state.keysDeleted, true)
+})
+
+test('offline: the account could not be told — uninstall carries on and says how to remove it from the phone', async () => {
+  const gone = fakeUninstall({ yes: true })
+  gone.d.unpair = async () => ({ ok: true, noop: true })
+  await runUninstall(gone.d)
+  assert.match(gone.text(), /✓ Removed "test-box" from a@example\.com \(it was not listed\)/)
+  const f = fakeUninstall({ yes: true, offline: true })
+  const r = await runUninstall(f.d)
+  assert.deepEqual(r, { done: true, left: 1 })
+  assert.match(f.text(), /✖ Could not remove "test-box" from a@example\.com \(network error\)/)
+  assert.match(f.text(), /Your phone may still list "test-box": open Code → Settings → Remove there/)
+  assert.deepEqual(f.state.removed, ['/home/u/.witbitz/code', '/home/u/witbitz-code.mjs'])
+})
+
+test('removing keys keeps every other line and provider', () => {
+  assert.equal(withoutEnvKeys('OPENCODE_SERVER_PASSWORD=p\nTINFOIL_API_KEY=tk\nexport TINFOIL_API_KEY="x"\nOTHER=1\n', ['TINFOIL_API_KEY']), 'OPENCODE_SERVER_PASSWORD=p\nOTHER=1\n')
+  assert.equal(withoutEnvKeys('TINFOIL_API_KEY=tk\n', ['TINFOIL_API_KEY']), '')
+  assert.deepEqual(JSON.parse(withoutAuthKey(JSON.stringify({ trustedrouter: { type: 'api', key: 'k' }, anthropic: { type: 'oauth' } }), 'trustedrouter')), { anthropic: { type: 'oauth' } })
+  assert.throws(() => withoutAuthKey('[]', 'trustedrouter'))
+})
+
+test('the installed services are found by their file names, on both systems', () => {
+  const home = tmp()
+  const run = () => ({ status: 0, stdout: '', stderr: '' })
+  const linux = serviceManager({ platform: 'linux', home, env: {}, run })
+  writeFileSync(join(home, 'dl.mjs'), '//')
+  linux.install({ node: '/usr/bin/node', script: join(home, 'dl.mjs'), port: 4096, path: '/usr/bin' })
+  linux.install({ node: '/usr/bin/node', script: join(home, 'dl.mjs'), port: 4097, path: '/usr/bin' })
+  writeFileSync(join(home, '.config/systemd/user/unrelated.service'), '')
+  assert.deepEqual(linux.installedPorts(), [4096, 4097])
+  const mac = serviceManager({ platform: 'darwin', home, uid: 501, run })
+  mac.install({ node: '/usr/local/bin/node', script: join(home, 'dl.mjs'), port: 4098, path: '/usr/bin' })
+  assert.deepEqual(mac.installedPorts(), [4098])
+})
+
+const NOTES = { root: '/home/u/.local/share/witbitz-notes', folders: 3, pluginFiles: ['/home/u/.config/opencode/plugins/witbitz-notes.js', '/home/u/.config/opencode/commands/notes-init.md'] }
+const SESSIONS = { dir: '/home/u/.local/share/opencode', exists: true }
+
+test('the notes plugin always goes (it would write new notes); notes and sessions only when asked — Enter keeps both', async () => {
+  const f = fakeUninstall({ keys: [], notes: NOTES, sessions: SESSIONS, answers: ['y', '', ''] })
+  await runUninstall(f.d)
+  const t = f.text()
+  assert.match(t, /remove the project-notes plugin from OpenCode \(2 files\)/)
+  assert.match(t, /Also delete your project notes — 3 project folders in \/home\/u\/\.local\/share\/witbitz-notes\? \[y\/N\]/)
+  assert.match(t, /Also delete ALL OpenCode sessions on this computer — every conversation, from Code and from the OpenCode app/)
+  assert.ok(f.state.removed.includes(NOTES.pluginFiles[0]) && f.state.removed.includes(NOTES.pluginFiles[1]))
+  assert.ok(!f.state.removed.includes(NOTES.root), 'Enter keeps the notes')
+  assert.equal(f.state.sessionsDeleted, false, 'Enter keeps the sessions')
+})
+
+test('saying yes deletes the notes and the sessions — but never under a running OpenCode', async () => {
+  const f = fakeUninstall({ keys: [], notes: NOTES, sessions: SESSIONS, answers: ['y', 'y', 'y'] })
+  await runUninstall(f.d)
+  assert.ok(f.state.removed.includes(NOTES.root))
+  assert.equal(f.state.sessionsDeleted, true)
+  assert.match(f.text(), /✓ Deleted the OpenCode sessions in \/home\/u\/\.local\/share\/opencode \(provider logins kept\)/)
+  // still running: it waits — and the services it stopped first no longer count; Enter re-checks, k keeps the sessions
+  let checks = 0
+  const waits = fakeUninstall({ keys: [], sessions: SESSIONS, answers: ['y', 'y', ''] })
+  waits.d.openCodeRunning = async () => (++checks === 1 ? [4097] : [])
+  waits.d.service.uninstall = (p) => { waits.state.removedServices.push(p); assert.equal(checks, 0, 'services stop before the check'); return { ok: true } }
+  await runUninstall(waits.d)
+  assert.match(waits.text(), /OpenCode is still running \(127\.0\.0\.1:4097\)\. Close it/)
+  assert.equal(waits.state.sessionsDeleted, true)
+  assert.ok(waits.state.removed.includes('/home/u/witbitz-code.mjs'))
+  const keep = fakeUninstall({ keys: [], sessions: SESSIONS, running: [4097], answers: ['y', 'y', 'k'] })
+  await runUninstall(keep.d)
+  assert.equal(keep.state.sessionsDeleted, false)
+  const scripted = fakeUninstall({ yes: true, removeSessions: true, sessions: SESSIONS, running: [4096] })
+  await runUninstall(scripted.d)
+  assert.equal(scripted.state.sessionsDeleted, false, '--yes never waits: it keeps them and says so')
+  assert.match(scripted.text(), /✖ Keeping the OpenCode sessions/)
+})
+
+test('--yes deletes neither notes nor sessions unless their flags say so; nothing to ask about → no question', async () => {
+  const f = fakeUninstall({ yes: true, notes: NOTES, sessions: SESSIONS })
+  await runUninstall(f.d)
+  assert.equal(f.state.sessionsDeleted, false)
+  assert.ok(!f.state.removed.includes(NOTES.root))
+  const all = fakeUninstall({ yes: true, removeNotes: true, removeSessions: true, notes: NOTES, sessions: SESSIONS })
+  await runUninstall(all.d)
+  assert.equal(all.state.sessionsDeleted, true)
+  assert.ok(all.state.removed.includes(NOTES.root))
+  const none = fakeUninstall({ keys: [], answers: ['y'] })
+  await runUninstall(none.d)
+  assert.equal(none.text().match(/\[y\/N\]/g).length, 1, 'only "Continue?" — no notes, no sessions, no keys here')
 })

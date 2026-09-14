@@ -113,7 +113,6 @@ def upsert_pairing(doc: Any, *, idx: dict, account: str = "", name: str = "", re
     """Add this computer for an account, or refresh the existing entry (same id + secret unless `rotate`). Pure.
     → {doc, entry, isNew, sharedWith}: sharedWith names the other accounts that reach the same OpenCode."""
     relay = RELAY_URL if relay is UNDEFINED else relay
-    opencode_url = DEFAULT_OPENCODE_URL if opencode_url is UNDEFINED else opencode_url
     cur = norm_pairings(doc)
     i = next((k for k, p in enumerate(cur["pairings"]) if strict_eq(p["idx"].get("room"), idx.get("room"))), -1)
     prev = cur["pairings"][i] if i >= 0 else None
@@ -130,7 +129,8 @@ def upsert_pairing(doc: Any, *, idx: dict, account: str = "", name: str = "", re
         "secret": prev["secret"] if prev is not None and not rotate else mint_secret(),
         "name": pick(name, "name", None) or hostname(),
         "relay": relay,
-        "opencodeUrl": prev["opencodeUrl"] if prev is not None and truthy(prev.get("opencodeUrl")) else opencode_url,
+        # An OpenCode asked for (`pair --port 4097`) wins; not asked → the entry keeps the one it had (tools/opencode-pair.mjs).
+        "opencodeUrl": pick(None if opencode_url is UNDEFINED else opencode_url, "opencodeUrl", DEFAULT_OPENCODE_URL),
     }
     pairings = list(cur["pairings"])
     if i >= 0:

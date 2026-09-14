@@ -212,8 +212,9 @@ def test_qr_ansi_and_svg_output_are_byte_identical_to_rc_qr():
       import { qrAnsi, qrSvg } from '@TOOLS@/rc-qr.mjs'
       import { qrModules } from '@PUBLIC@/qrRender.js'
       const { size, isDark } = qrModules(INPUT)
-      OUT({ ansi: qrAnsi(INPUT), svg: qrSvg(INPUT), rows: Array.from({ length: size }, (_, r) => Array.from({ length: size }, (_, c) => isDark(r, c))) })
+      OUT({ ansi: qrAnsi(INPUT, { compact: true }), large: qrAnsi(INPUT, { compact: false }), svg: qrSvg(INPUT), rows: Array.from({ length: size }, (_, r) => Array.from({ length: size }, (_, c) => isDark(r, c))) })
     """, text)
-    assert qr.render_ansi(out["rows"]) == out["ansi"]
+    assert qr.render_ansi(out["rows"], compact=True) == out["ansi"], "the compact half-block drawing"
+    assert qr.render_ansi(out["rows"], compact=False) == out["large"], "and WITBITZ_QR=large"
     assert qr.render_svg(out["rows"]) == out["svg"]
     assert len(qr.qr_modules(text)) == len(out["rows"]), "and the same version: the smallest that fits at level M"
