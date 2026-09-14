@@ -62,6 +62,23 @@ test('relay: subscribe delivers parsed OpenCode events; stop() ends the delivery
   assert.ok(await until(() => oc.streams.size === 0), 'unsub closes the local stream')
 })
 
+// The owner, opening Code: "I get this brief red warning. It is transient and shouldnt show up" — "my laptop is offline —
+// start it…" for a moment on every open. The socket opened before the relay said who else was on the channel, so the page
+// counted itself alone and said offline; the computer's hello came a moment later.
+test('relay: opening onto a running computer goes connecting → online, never through offline', async (t) => {
+  const { relay, pairing } = await rig(t)
+  for (let i = 0; i < 5; i++) {
+    const seen = []
+    const tr = relayTransport({ computer: { id: 'cmp1', name: 'desk', relay: relay.url(), secret: pairing.secret } })
+    tr.onChange((st) => seen.push(st))
+    const first = tr.status()
+    assert.ok(await until(() => tr.status() === 'online'), `online: ${tr.status()}`)
+    tr.close()
+    assert.equal(first, 'connecting')
+    assert.ok(!seen.includes('offline'), `open #${i + 1} never said offline — ${JSON.stringify(seen)}`)
+  }
+})
+
 test('relay: the computer going away reads as offline, a request then fails fast; it comes back online by itself', async (t) => {
   const { tr, stopComputer, startComputer } = await rig(t)
   assert.ok(await until(() => tr.status() === 'online'))

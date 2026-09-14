@@ -304,3 +304,69 @@ test('a projected route that fails or does not parse never passes its raw body; 
   assert.deepEqual(projectResponse('GET', '/agent', 200, '[{"name":"build"}]'), { st: 200, b: '[{"name":"build"}]' })
   assert.deepEqual(projectResponse('POST', '/config', 200, 'x'), { st: 200, b: 'x' }, 'only GET is projected (POST /config is not on the allowlist anyway)')
 })
+
+// ── the relay heartbeat (codeRelay.js RELAY_PING) ─────────────────────────────────────────────────────────────────
+// Measured 2026-09-14: after a network blip the connector's relay socket stayed "open" for 10+ minutes with 942 KB unsent,
+// and the phone found a computer that never answered ("my laptop is offline").
+test('heartbeat: a socket on a dead path redials by itself, and messages flow again — with every phone away too', async (t) => {
+  const relay = await fakeRelay()
+  t.after(() => relay.close())
+  const secret = newRelaySecret()
+  const got = []
+  const computer = new RelayPeer({ secret, role: 'computer', relay: relay.url(), heartbeatMs: 80, pongWaitMs: 120, onMessage: (m) => got.push(m) })
+  t.after(() => computer.stop())
+  await computer.start()
+  assert.ok(await until(() => computer.isOpen && computer.relayAnswers), 'the relay answered the first ping')
+  const states = []
+  computer.onState = (s) => states.push(s)
+  relay.stall() // nobody else is on the channel: only the relay can tell it the path is dead
+  assert.ok(await until(() => states.includes('connecting') && computer.isOpen, 2000), `redialled: ${states}`)
+  const client = new RelayPeer({ secret, role: 'client', relay: relay.url(), heartbeatMs: 0 })
+  t.after(() => client.stop())
+  await client.start()
+  assert.ok(await until(() => client.isOpen && client.peers === 2), 'the new socket is on the channel, the dead one is not counted')
+  await client.send({ t: 'req', id: 'after-stall' })
+  assert.ok(await until(() => got.some((m) => m.id === 'after-stall')))
+})
+
+test('heartbeat: an older relay that does not answer gets ONE ping per socket, no redial loop, and peers ignore it', async (t) => {
+  const relay = await fakeRelay({ answerPings: false })
+  t.after(() => relay.close())
+  const secret = newRelaySecret()
+  const got = []
+  let raw = 0
+  class Watching extends WebSocket { constructor(...a) { super(...a); this.addEventListener('message', (e) => { if (e.data === '{"t":"relay-ping"}') raw++ }) } }
+  const computer = new RelayPeer({ secret, role: 'computer', relay: relay.url(), WebSocketImpl: Watching, heartbeatMs: 40, pongWaitMs: 40, onMessage: (m) => got.push(m) })
+  const client = new RelayPeer({ secret, role: 'client', relay: relay.url(), heartbeatMs: 40, pongWaitMs: 40 })
+  t.after(() => { computer.stop(); client.stop() })
+  const states = []
+  await computer.start()
+  assert.ok(await until(() => computer.isOpen))
+  computer.onState = (s) => states.push(s)
+  await client.start()
+  await new Promise((r) => setTimeout(r, 600)) // ~15 heartbeats
+  assert.deepEqual(states, [], 'never redialled')
+  assert.ok(raw <= 1, `the computer saw at most the client's one ping — saw ${raw}`)
+  assert.deepEqual(got, [], 'a ping is not a message')
+  await client.send({ t: 'req', id: 'still-fine' })
+  assert.ok(await until(() => got.some((m) => m.id === 'still-fine')))
+})
+
+test('heartbeat: kick() on an "open" socket that is really dead (iOS froze it) asks the relay and redials at once', async (t) => {
+  const relay = await fakeRelay()
+  t.after(() => relay.close())
+  const p = new RelayPeer({ secret: newRelaySecret(), role: 'client', relay: relay.url(), heartbeatMs: 60_000, pongWaitMs: 150 })
+  t.after(() => p.stop())
+  await p.start()
+  assert.ok(await until(() => p.isOpen && p.relayAnswers))
+  const states = []
+  p.onState = (s) => states.push(s)
+  p.kick() // a live socket: the relay answers, nothing changes
+  await new Promise((r) => setTimeout(r, 300))
+  assert.deepEqual(states, [], 'an answered probe leaves a good socket alone')
+  relay.stall()
+  const t0 = Date.now()
+  p.kick()
+  assert.ok(await until(() => states.includes('connecting') && p.isOpen, 2000), `redialled: ${states}`)
+  assert.ok(Date.now() - t0 < 2000, 'within the probe wait, not the 60 s heartbeat')
+})

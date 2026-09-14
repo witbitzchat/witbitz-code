@@ -23,6 +23,12 @@ test('the shipped witbitz-code.mjs is exactly what the current sources build to'
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('the shipped file names no builder\'s home directory (esbuild path comments through a symlinked node_modules)', () => {
+  const text = readFileSync(SHIPPED, 'utf8')
+  assert.doesNotMatch(text, /\/\/ (\.\.\/)+(home|Users)\//, 'rebuild with tools/build-witbitz-code.sh (it passes --preserve-symlinks)')
+  assert.doesNotMatch(text, /(^|["'\s/])\/(home|Users)\/[^/\s"']+\/witbitz\//m, 'no absolute path of the build machine')
+})
+
 test('it runs standalone: help, version, and status with no pairing', () => {
   const dir = mkdtempSync(join(tmpdir(), 'wbc-run-'))
   try {

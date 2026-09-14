@@ -58,6 +58,7 @@ export function directTransport({ base, pass, fetchImpl = (...a) => fetch(...a) 
 }
 
 // ── relay ────────────────────────────────────────────────────────────────────────────────────────────────────────
+const PEERS_WAIT_MS = 3_000 // a relay that never says who is on the channel: offline after this, not "connecting" for good
 const HELLO_FRESH_MS = 30_000 // the connector says hello every 20 s while someone is here
 const WAIT_ONLINE_MS = 8_000 // a request made while connecting waits this long for the computer
 const REQUEST_TIMEOUT_MS = 35_000 // the connector's own timeout is 30 s
@@ -88,10 +89,13 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
   let freshTimer = 0
 
   let openedAt = 0
+  // The relay says who is on the channel only just AFTER the socket opens. Counting the page alone before then said
+  // "offline" for a moment on every open (the owner: "I get this brief red warning. It is transient and shouldnt show up").
+  let peersKnown = false
   const status = () => {
     if (!peer.isOpen) return 'connecting' // still dialling the relay (or retrying)
     if (peer.peers >= 2 && now() - lastHello < HELLO_FRESH_MS) return 'online'
-    if (peer.peers < 2) return 'offline' // on the channel and alone: the computer is not running
+    if (peer.peers < 2) return !peersKnown && now() - openedAt < PEERS_WAIT_MS ? 'connecting' : 'offline' // alone on the channel: the computer is not running
     // Someone else is here but has not said hello — maybe the computer is just answering, maybe it is only another of
     // your devices. Give it a moment, then call it offline.
     return now() - openedAt < 5_000 ? 'connecting' : 'offline'
@@ -133,8 +137,8 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     role: 'client',
     relay: computer.relay,
     WebSocketImpl,
-    onState: (s) => { if (s === 'open') { openedAt = now(); peer.send({ t: 'ping' }) } else { lastHello = 0; nonce = '' } changed() },
-    onPeers: (n) => { if (n < 2) lastHello = 0; else peer.send({ t: 'ping' }); changed() },
+    onState: (s) => { peersKnown = false; if (s === 'open') { openedAt = now(); peer.send({ t: 'ping' }); setTimeout(changed, PEERS_WAIT_MS + 50) } else { lastHello = 0; nonce = '' } changed() },
+    onPeers: (n) => { peersKnown = peer.isOpen; if (n < 2) lastHello = 0; else peer.send({ t: 'ping' }); changed() },
     onMessage: (m) => {
       if (m.t === 'hello') { onHello(m); return }
       if (m.t === 'progress') { for (const fn of progressListeners) { try { fn(m) } catch { /* */ } } return }

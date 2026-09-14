@@ -134,3 +134,17 @@ test('a single message over 1 MiB closes the sender with 1009 and is not forward
   assert.deepEqual(peer.data(), [])
   peer.ws.close()
 })
+
+// The heartbeat (spaces/public/codeRelay.js RELAY_PING): measured 2026-09-14, a connector's socket went dead after a network
+// blip yet stayed "open" for 10+ minutes, and phones found a computer that never answered. The relay answers the ping itself.
+test('the relay answers {"t":"relay-ping"} to the sender alone — not broadcast, not counted as the sender\'s traffic', { skip }, async () => {
+  const ch = 'I'.repeat(43)
+  const a = await connect(ch), b = await connect(ch)
+  for (let i = 0; i < 250; i++) a.ws.send('{"t":"relay-ping"}') // more than the rate limit: auto-answers are not counted
+  assert.ok(await until(() => a.data().filter((m) => m === '{"t":"relay-pong"}').length === 250), `a got every pong — got ${a.data().length}`)
+  await new Promise((r) => setTimeout(r, 150))
+  assert.deepEqual(b.data(), [], 'the other socket hears nothing of it')
+  a.ws.send('sealed-after')
+  assert.ok(await until(() => b.data().includes('sealed-after')), 'and the pinging socket was not closed by the rate limit')
+  a.ws.close(); b.ws.close()
+})

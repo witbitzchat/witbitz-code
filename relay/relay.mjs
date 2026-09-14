@@ -46,7 +46,12 @@ export default {
 }
 
 export class Relay {
-  constructor(state) { this.state = state }
+  constructor(state) {
+    this.state = state
+    // The heartbeat (spaces/public/codeRelay.js RELAY_PING): answered by the runtime itself — the object is not woken, the
+    // message is not broadcast and not counted against the rate limit. A socket whose ping goes unanswered redials.
+    try { state.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"relay-ping"}', '{"t":"relay-pong"}')) } catch { /* a runtime without auto-responses: pings are broadcast, and peers ignore them */ }
+  }
 
   async fetch() {
     // Refuse BEFORE upgrading: a 429 is an answer the client can read; a socket closed right after 101 is a mystery.

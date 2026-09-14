@@ -764,3 +764,79 @@ def test_the_nonce_is_fresh_per_socket_and_no_hello_goes_out_without_one():
         assert os.environ.get("WITBITZ_CODE_BUNDLED") is None
 
     run(go())
+
+
+# ── the relay heartbeat (relay.py RELAY_PING ≡ codeRelay.js) ─────────────────────────────────────────────────────────
+# Measured 2026-09-14: after a network blip the connector's relay socket stayed "open" for 10+ minutes with 942 KB unsent,
+# and the phone found a computer that never answered ("my laptop is offline").
+def test_heartbeat_a_socket_on_a_dead_path_redials_by_itself_with_every_phone_away():
+    async def go():
+        relay = await fake_relay()
+        states, got = [], []
+        p = RelayPeer(secret=new_relay_secret(), role="computer", relay=relay.url, heartbeat=0.08, pong_wait=0.12,
+                      on_message=got.append)
+        await p.start()
+        try:
+            assert await until(lambda: p.is_open and p.relay_answers, 3), "the relay answered the first ping"
+            p.on_state = states.append
+            relay.stall()  # nobody else is on the channel: only the relay can tell the path is dead
+            assert await until(lambda: "connecting" in states and p.is_open, 3), f"redialled: {states}"
+            client = RelayPeer(secret=p.secret, role="client", relay=relay.url, heartbeat=0)
+            await client.start()
+            try:
+                assert await until(lambda: client.is_open and client.peers == 2, 3), "the new socket is on the channel"
+                await client.send({"t": "req", "id": "after-stall"})
+                assert await until(lambda: any(m.get("id") == "after-stall" for m in got), 3)
+            finally:
+                await client.aclose()
+        finally:
+            await p.aclose()
+            await relay.close()
+
+    run(go())
+
+
+def test_heartbeat_an_older_relay_gets_one_ping_per_socket_and_no_redial_loop():
+    async def go():
+        relay = await fake_relay(answer_pings=False)
+        states = []
+        secret = new_relay_secret()
+        p = RelayPeer(secret=secret, role="computer", relay=relay.url, heartbeat=0.04, pong_wait=0.04)
+        c = RelayPeer(secret=secret, role="client", relay=relay.url, heartbeat=0.04, pong_wait=0.04)
+        await p.start()
+        try:
+            assert await until(lambda: p.is_open, 3)
+            p.on_state = states.append
+            await c.start()
+            await asyncio.sleep(0.6)  # ~15 heartbeats
+            assert states == [], "never redialled"
+            pings = [m for m in relay.recorded if m == '{"t":"relay-ping"}']
+            assert len(pings) <= 2, f"one ping per socket at most — {len(pings)}"
+        finally:
+            await c.aclose()
+            await p.aclose()
+            await relay.close()
+
+    run(go())
+
+
+def test_heartbeat_kick_on_an_open_but_dead_socket_redials_at_once():
+    async def go():
+        relay = await fake_relay()
+        states = []
+        p = RelayPeer(secret=new_relay_secret(), role="client", relay=relay.url, heartbeat=60, pong_wait=0.15)
+        await p.start()
+        try:
+            assert await until(lambda: p.is_open and p.relay_answers, 3)
+            p.on_state = states.append
+            p.kick()  # a live socket: answered, nothing changes
+            await asyncio.sleep(0.3)
+            assert states == [], "an answered probe leaves a good socket alone"
+            relay.stall()
+            p.kick()
+            assert await until(lambda: "connecting" in states and p.is_open, 2), f"redialled within the probe wait: {states}"
+        finally:
+            await p.aclose()
+            await relay.close()
+
+    run(go())

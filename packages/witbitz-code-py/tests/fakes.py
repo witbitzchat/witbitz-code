@@ -49,6 +49,12 @@ class FakeRelay:
     server: Any
     channels: dict = field(default_factory=dict)
     recorded: list = field(default_factory=list)  # every message forwarded, as the relay operator could keep them
+    answer_pings: bool = True  # False: an older relay, which broadcasts {"t":"relay-ping"} like any message
+    stalled: set = field(default_factory=set)  # sockets on a dead network path: "open", but nothing reaches or leaves them
+
+    def stall(self) -> None:
+        for conns in self.channels.values():
+            self.stalled.update(conns)
 
     @property
     def url(self) -> str:
@@ -66,12 +72,14 @@ class FakeRelay:
         await self.server.wait_closed()
 
 
-async def fake_relay() -> FakeRelay:
-    relay = FakeRelay(server=None)
+async def fake_relay(*, answer_pings: bool = True) -> FakeRelay:
+    relay = FakeRelay(server=None, answer_pings=answer_pings)
 
     async def announce(conns: set) -> None:
         msg = json.dumps({"t": "peers", "n": len(conns)}, separators=(",", ":"))
         for ws in list(conns):
+            if ws in relay.stalled:
+                continue
             try:
                 await ws.send(msg)
             except Exception:
@@ -84,9 +92,14 @@ async def fake_relay() -> FakeRelay:
         await announce(conns)
         try:
             async for msg in ws:
+                if ws in relay.stalled:
+                    continue
+                if relay.answer_pings and msg == '{"t":"relay-ping"}':
+                    await ws.send('{"t":"relay-pong"}')
+                    continue
                 relay.recorded.append(msg)
                 for other in list(conns):
-                    if other is not ws:
+                    if other is not ws and other not in relay.stalled:
                         try:
                             await other.send(msg)
                         except Exception:

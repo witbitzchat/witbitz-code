@@ -9907,6 +9907,10 @@ function makeOpener(key, { maxSenders = 64, onEvict = () => {
     }
   };
 }
+var RELAY_PING = '{"t":"relay-ping"}';
+var RELAY_PONG = '{"t":"relay-pong"}';
+var HEARTBEAT_MS = 25e3;
+var PONG_WAIT_MS = 1e4;
 function peersOf(text) {
   if (typeof text !== "string" || !text.startsWith('{"t":"peers"')) return null;
   try {
@@ -9967,9 +9971,12 @@ var RelayPeer = class {
   }, onPeers = () => {
   }, onState = () => {
   }, onEvict = () => {
-  }, maxSenders = 64, minBackoff = 500, maxBackoff = 15e3 }) {
+  }, maxSenders = 64, minBackoff = 500, maxBackoff = 15e3, heartbeatMs = HEARTBEAT_MS, pongWaitMs = PONG_WAIT_MS }) {
     if (role !== "client" && role !== "computer") throw new Error("role must be client or computer");
-    Object.assign(this, { secret, role, relay: String(relay).replace(/\/+$/, ""), WebSocketImpl, onMessage, onPeers, onState, onEvict, maxSenders, minBackoff, maxBackoff });
+    Object.assign(this, { secret, role, relay: String(relay).replace(/\/+$/, ""), WebSocketImpl, onMessage, onPeers, onState, onEvict, maxSenders, minBackoff, maxBackoff, heartbeatMs, pongWaitMs });
+    this.beat = 0;
+    this.relayAnswers = false;
+    this.relayKnown = false;
     this.peers = 0;
     this.state = "idle";
     this.ws = null;
@@ -9990,6 +9997,7 @@ var RelayPeer = class {
   stop() {
     this.stopped = true;
     clearTimeout(this.timer);
+    this.stopBeat();
     this.waiting = false;
     try {
       if (this.ws) this.ws.close(1e3);
@@ -10000,7 +10008,11 @@ var RelayPeer = class {
   }
   /** Reconnect now (e.g. the page became visible again) instead of waiting out the backoff. */
   kick() {
-    if (this.stopped || this.state === "open" || this.state === "connecting" && !this.waiting) return;
+    if (!this.stopped && this.state === "open") {
+      this.probe();
+      return;
+    }
+    if (this.stopped || this.state === "connecting" && !this.waiting) return;
     clearTimeout(this.timer);
     this.waiting = false;
     this.backoff = this.minBackoff;
@@ -10009,6 +10021,7 @@ var RelayPeer = class {
   /** Drop the current socket and dial again now — for a socket that is "open" but has gone silent (a dead network path). */
   reconnect() {
     if (this.stopped) return;
+    this.stopBeat();
     const ws = this.ws;
     this.ws = null;
     try {
@@ -10020,6 +10033,32 @@ var RelayPeer = class {
     this.waiting = false;
     this.backoff = this.minBackoff;
     this.connect();
+  }
+  /** Ping the relay on the current socket; no pong within `waitMs` → reconnect(). Once the relay has not answered on this
+   *  socket, only the first ping is ever sent (see RELAY_PING). */
+  probe(waitMs = this.pongWaitMs) {
+    const ws = this.ws;
+    if (this.stopped || !ws || this.state !== "open") return;
+    const enforce = this.relayAnswers || this.relayKnown;
+    if (!enforce && this.pingedUnanswered) return;
+    const sentAt = Date.now();
+    try {
+      ws.send(RELAY_PING);
+    } catch {
+      return;
+    }
+    if (!enforce) {
+      this.pingedUnanswered = true;
+      return;
+    }
+    setTimeout(() => {
+      if (this.ws !== ws || this.stopped || this.state !== "open") return;
+      if (!(this.lastPongAt >= sentAt)) this.reconnect();
+    }, waitMs);
+  }
+  stopBeat() {
+    clearInterval(this.beat);
+    this.beat = 0;
   }
   get channel() {
     return this.keys && this.keys.channel;
@@ -10051,15 +10090,30 @@ var RelayPeer = class {
     this.ws = ws;
     this.sealer = sealer;
     this.setState("connecting");
+    this.stopBeat();
+    this.relayAnswers = false;
+    this.pingedUnanswered = false;
+    this.lastPongAt = 0;
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.backoff = this.minBackoff;
       this.setState("open");
+      if (this.heartbeatMs > 0) {
+        this.probe();
+        this.beat = setInterval(() => this.probe(), this.heartbeatMs);
+      }
     };
     ws.onmessage = (e) => {
       this.recvChain = this.recvChain.then(async () => {
         if (this.ws !== ws) return;
         const text = typeof e.data === "string" ? e.data : null;
+        if (text === RELAY_PONG) {
+          this.relayAnswers = this.relayKnown = true;
+          this.pingedUnanswered = false;
+          this.lastPongAt = Date.now();
+          return;
+        }
+        if (text === RELAY_PING) return;
         const n = peersOf(text);
         if (n !== null) {
           this.peers = n;
@@ -10081,6 +10135,7 @@ var RelayPeer = class {
     };
     ws.onclose = () => {
       if (this.ws !== ws) return;
+      this.stopBeat();
       this.ws = null;
       this.peers = 0;
       try {

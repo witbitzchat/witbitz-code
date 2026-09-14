@@ -204,6 +204,15 @@ creates the session where the server decides and says to update witbitz-code.
   GETs are retried once after a reconnect; mutating calls are never auto-retried.
 - **Keep-alive:** the connector says `hello` every 20 s while a client is present; a page whose socket stays "open" with a
   peer but hears no hello for 50 s treats the path as dead and redials. Durable Object hibernation keeps idle channels ~free.
+- **Heartbeat (2026-09-15):** every peer — page and both connectors — sends the unsealed text `{"t":"relay-ping"}` every
+  25 s, and the relay answers `{"t":"relay-pong"}` to that socket alone (`setWebSocketAutoResponse`: the object is not
+  woken, nothing is broadcast, it does not count toward the rate limit). No pong within 10 s → redial. Measured the night
+  before: after a network blip the connector's socket stayed "open" 10+ minutes with 942 KB unacknowledged, the relay still
+  counted it, and phones saw a computer that never answered — the connector, rightly hearing nothing while phones were
+  away, had no way to tell. Enforced only once the peer's relay has answered a ping (an older relay broadcasts the first
+  one, which peers ignore, and gets no more). A page coming back to the foreground pings at once (`kick()`), so a socket iOS
+  froze rather than closed is redialled within 10 s. A phone in the background changes nothing for the connector: its
+  check is against the relay, not the phone.
 
 ## 5. Components and file plan
 

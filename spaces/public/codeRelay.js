@@ -91,6 +91,20 @@ export function makeOpener(key, { maxSenders = 64, onEvict = () => {} } = {}) {
   }
 }
 
+// ── the relay's heartbeat ────────────────────────────────────────────────────────────────────────────────────────
+// A dead network path can leave a socket "open" for a quarter of an hour: send() never fails, TCP retries in silence.
+// Measured 2026-09-14: after a blip the connector's relay socket held 942 KB unacknowledged for 10 minutes while its log
+// said "relay open" — the relay still counted it, so the phone found "a computer" that never answered ("my laptop is
+// offline"). The page could tell (no hello for 50 s); the connector could not, since with every phone away it rightly
+// hears nothing. So each end asks the RELAY: it answers RELAY_PING with RELAY_PONG itself (a Cloudflare auto-response —
+// the Durable Object is not woken, the other sockets never see it). No pong within PONG_WAIT_MS → redial.
+// Only enforced once this relay has answered on the socket: an older relay (or a self-hosted one without the answer)
+// broadcasts the first ping to the others instead, which they ignore, and nothing more is sent to it.
+export const RELAY_PING = '{"t":"relay-ping"}'
+export const RELAY_PONG = '{"t":"relay-pong"}'
+export const HEARTBEAT_MS = 25_000
+export const PONG_WAIT_MS = 10_000
+
 /** Is this socket message the relay's own unsealed peer count? → n, else null. */
 export function peersOf(text) {
   if (typeof text !== 'string' || !text.startsWith('{"t":"peers"')) return null
@@ -144,9 +158,12 @@ export function makeReassembler({ timeoutMs = 60_000, maxTotal = MAX_TOTAL } = {
  * A fresh sealer (new sender id, q from 1) per socket, so a reconnect is never mistaken for a replay.
  */
 export class RelayPeer {
-  constructor({ secret, role, relay = RELAY_URL, WebSocketImpl = globalThis.WebSocket, onMessage = () => {}, onPeers = () => {}, onState = () => {}, onEvict = () => {}, maxSenders = 64, minBackoff = 500, maxBackoff = 15_000 }) {
+  constructor({ secret, role, relay = RELAY_URL, WebSocketImpl = globalThis.WebSocket, onMessage = () => {}, onPeers = () => {}, onState = () => {}, onEvict = () => {}, maxSenders = 64, minBackoff = 500, maxBackoff = 15_000, heartbeatMs = HEARTBEAT_MS, pongWaitMs = PONG_WAIT_MS }) {
     if (role !== 'client' && role !== 'computer') throw new Error('role must be client or computer')
-    Object.assign(this, { secret, role, relay: String(relay).replace(/\/+$/, ''), WebSocketImpl, onMessage, onPeers, onState, onEvict, maxSenders, minBackoff, maxBackoff })
+    Object.assign(this, { secret, role, relay: String(relay).replace(/\/+$/, ''), WebSocketImpl, onMessage, onPeers, onState, onEvict, maxSenders, minBackoff, maxBackoff, heartbeatMs, pongWaitMs })
+    this.beat = 0 // the heartbeat interval of the current socket
+    this.relayAnswers = false // this socket's relay has answered a ping
+    this.relayKnown = false // …or one of this peer's earlier sockets did: then a missing pong means a dead path from the first ping
     this.peers = 0
     this.state = 'idle' // idle | connecting | open | closed
     this.ws = null
@@ -172,6 +189,7 @@ export class RelayPeer {
   stop() {
     this.stopped = true
     clearTimeout(this.timer)
+    this.stopBeat()
     this.waiting = false // a stop during a backoff wait must not leave kick() believing a wait is pending (it dialled a 2nd socket)
     try { if (this.ws) this.ws.close(1000) } catch { /* */ }
     this.ws = null
@@ -180,14 +198,18 @@ export class RelayPeer {
 
   /** Reconnect now (e.g. the page became visible again) instead of waiting out the backoff. */
   kick() {
+    // An "open" socket may be one iOS froze in the background rather than closed: ask the relay now, and redial if it
+    // does not answer — instead of waiting for the next heartbeat, or the page's 50-second hello silence.
+    if (!this.stopped && this.state === 'open') { this.probe(); return }
     // ★ `connecting` covers two situations: a socket actually dialling (leave it) and a backoff WAIT (skip it). Treating
     //   both alike made kick() a no-op exactly when it matters — iOS bringing the page back after killing its socket.
-    if (this.stopped || this.state === 'open' || (this.state === 'connecting' && !this.waiting)) return
+    if (this.stopped || (this.state === 'connecting' && !this.waiting)) return
     clearTimeout(this.timer); this.waiting = false; this.backoff = this.minBackoff; this.connect()
   }
   /** Drop the current socket and dial again now — for a socket that is "open" but has gone silent (a dead network path). */
   reconnect() {
     if (this.stopped) return
+    this.stopBeat()
     const ws = this.ws
     this.ws = null
     try { if (ws) ws.close(4000, 'silent') } catch { /* */ }
@@ -195,6 +217,23 @@ export class RelayPeer {
     clearTimeout(this.timer); this.waiting = false; this.backoff = this.minBackoff
     this.connect()
   }
+
+  /** Ping the relay on the current socket; no pong within `waitMs` → reconnect(). Once the relay has not answered on this
+   *  socket, only the first ping is ever sent (see RELAY_PING). */
+  probe(waitMs = this.pongWaitMs) {
+    const ws = this.ws
+    if (this.stopped || !ws || this.state !== 'open') return
+    const enforce = this.relayAnswers || this.relayKnown
+    if (!enforce && this.pingedUnanswered) return // an older relay: it broadcasts pings — send it no more
+    const sentAt = Date.now()
+    try { ws.send(RELAY_PING) } catch { return }
+    if (!enforce) { this.pingedUnanswered = true; return } // learning whether this relay answers at all
+    setTimeout(() => {
+      if (this.ws !== ws || this.stopped || this.state !== 'open') return
+      if (!(this.lastPongAt >= sentAt)) this.reconnect() // a dead path: the relay did not hear us, or we did not hear it
+    }, waitMs)
+  }
+  stopBeat() { clearInterval(this.beat); this.beat = 0 }
 
   get channel() { return this.keys && this.keys.channel }
   get isOpen() { return this.state === 'open' }
@@ -211,18 +250,26 @@ export class RelayPeer {
     this.ws = ws
     this.sealer = sealer
     this.setState('connecting')
-    ws.onopen = () => { if (this.ws !== ws) return; this.backoff = this.minBackoff; this.setState('open') }
+    this.stopBeat()
+    this.relayAnswers = false; this.pingedUnanswered = false; this.lastPongAt = 0
+    ws.onopen = () => {
+      if (this.ws !== ws) return
+      this.backoff = this.minBackoff; this.setState('open')
+      if (this.heartbeatMs > 0) { this.probe(); this.beat = setInterval(() => this.probe(), this.heartbeatMs) }
+    }
     ws.onmessage = (e) => {
       this.recvChain = this.recvChain.then(async () => {
         if (this.ws !== ws) return
         const text = typeof e.data === 'string' ? e.data : null
+        if (text === RELAY_PONG) { this.relayAnswers = this.relayKnown = true; this.pingedUnanswered = false; this.lastPongAt = Date.now(); return }
+        if (text === RELAY_PING) return // another peer's ping, broadcast by a relay that does not answer it
         const n = peersOf(text)
         if (n !== null) { this.peers = n; try { this.onPeers(n) } catch { /* */ } return }
         const msg = this.reasm.push(await opener.open(text))
         if (msg) { try { this.onMessage(msg) } catch { /* a handler bug must not kill the socket */ } }
       }).catch(() => {})
     }
-    ws.onclose = () => { if (this.ws !== ws) return; this.ws = null; this.peers = 0; try { this.onPeers(0) } catch { /* */ } this.retry() }
+    ws.onclose = () => { if (this.ws !== ws) return; this.stopBeat(); this.ws = null; this.peers = 0; try { this.onPeers(0) } catch { /* */ } this.retry() }
     ws.onerror = () => { try { ws.close() } catch { /* */ } }
   }
 

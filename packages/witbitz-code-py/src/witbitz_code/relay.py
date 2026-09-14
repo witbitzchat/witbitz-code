@@ -32,6 +32,14 @@ from . import _js
 from ._js import UNDEFINED, b64u
 
 RELAY_URL = "wss://code-relay.witbitz.chat"
+
+# The relay's heartbeat (spaces/public/codeRelay.js RELAY_PING): the relay answers the ping itself, to the sender alone. A
+# dead network path leaves a socket "open" for a quarter of an hour; no pong within PONG_WAIT_S → redial. Enforced only once
+# this peer's relay has answered: an older relay broadcasts the first ping, and is sent no more.
+RELAY_PING = '{"t":"relay-ping"}'
+RELAY_PONG = '{"t":"relay-pong"}'
+HEARTBEAT_S = 25.0
+PONG_WAIT_S = 10.0
 SALT = b"witbitz-code-relay-v1"
 CHUNK = 192 * 1024  # UTF-16 code units of `b`, as in JS: Cloudflare caps a message at 1 MiB and a frame is ~4/3 of it
 MAX_TOTAL = 32 * 1024 * 1024
@@ -266,7 +274,8 @@ class RelayPeer:
 
     def __init__(self, *, secret: str, role: str, relay: str = RELAY_URL, on_message: Callable | None = None,
                  on_peers: Callable | None = None, on_state: Callable | None = None, on_evict: Callable | None = None,
-                 max_senders: int = 64, min_backoff: float = 0.5, max_backoff: float = 15.0, connect: Connect | None = None) -> None:
+                 max_senders: int = 64, min_backoff: float = 0.5, max_backoff: float = 15.0, connect: Connect | None = None,
+                 heartbeat: float = HEARTBEAT_S, pong_wait: float = PONG_WAIT_S) -> None:
         if role not in ("client", "computer"):
             raise ValueError("role must be client or computer")
         self.secret = secret
@@ -290,6 +299,12 @@ class RelayPeer:
         self._redial = False
         self._send_chain: asyncio.Future | None = None
         self._closing: set[asyncio.Task] = set()
+        self.heartbeat, self.pong_wait = heartbeat, pong_wait
+        self.relay_answers = False  # this socket's relay has answered a ping
+        self.relay_known = False  # ...or an earlier socket's did: a missing pong then means a dead path from the first ping
+        self._pinged_unanswered = False
+        self._last_pong = 0.0
+        self._probes: set[asyncio.Task] = set()
 
     @property
     def channel(self) -> str | None:
@@ -329,13 +344,50 @@ class RelayPeer:
             await asyncio.wait(pending, timeout=CLOSE_TIMEOUT_S + 1)
 
     def kick(self) -> None:
-        """Reconnect now (e.g. the page became visible again) instead of waiting out the backoff.
+        """Reconnect now (e.g. the page became visible again) instead of waiting out the backoff. An "open" socket is asked
+        about instead: the relay must answer a ping, or it is redialled (a socket frozen, not closed).
         ★ `connecting` covers two situations: a socket actually dialling (leave it) and a backoff WAIT (skip it)."""
-        if self._stopped or self.state == "open" or (self.state == "connecting" and not self.waiting):
+        if not self._stopped and self.state == "open":
+            self.probe()
+            return
+        if self._stopped or (self.state == "connecting" and not self.waiting):
             return
         self._backoff = self.min_backoff
         if self._wake is not None:
             self._wake.set()
+
+    def probe(self) -> None:
+        """Ping the relay on the current socket; no pong within pong_wait → reconnect()."""
+        ws = self._ws
+        if self._stopped or ws is None or self.state != "open":
+            return
+        try:
+            t = asyncio.get_running_loop().create_task(self._probe(ws))
+        except RuntimeError:
+            return
+        self._probes.add(t)
+        t.add_done_callback(self._probes.discard)
+
+    async def _probe(self, ws: Any) -> None:
+        enforce = self.relay_answers or self.relay_known
+        if not enforce and self._pinged_unanswered:
+            return  # an older relay: it broadcasts pings — send it no more
+        sent = time.monotonic()
+        try:
+            await ws.send(RELAY_PING)
+        except Exception:
+            return
+        if not enforce:
+            self._pinged_unanswered = True  # learning whether this relay answers at all
+            return
+        await asyncio.sleep(self.pong_wait)
+        if self._ws is ws and not self._stopped and self.state == "open" and not self._last_pong >= sent:
+            self.reconnect()  # a dead path: the relay did not hear us, or we did not hear it
+
+    async def _heartbeat(self, ws: Any) -> None:
+        while self._ws is ws and not self._stopped:
+            self.probe()
+            await asyncio.sleep(self.heartbeat)
 
     def reconnect(self) -> None:
         """Drop the current socket and dial again now — for a socket that is "open" but has gone silent (a dead path)."""
@@ -406,7 +458,9 @@ class RelayPeer:
         reasm = Reassembler()
         self._ws, self._sealer = ws, sealer
         self._backoff = self.min_backoff
+        self.relay_answers, self._pinged_unanswered, self._last_pong = False, False, 0.0
         self._set_state("open")
+        beat = asyncio.get_running_loop().create_task(self._heartbeat(ws)) if self.heartbeat > 0 else None
         try:
             # One loop, one frame at a time: frames are opened in the order they arrived (the JS recvChain).
             async for data in ws:
@@ -414,6 +468,13 @@ class RelayPeer:
                     break
                 if not isinstance(data, str):
                     continue
+                if data == RELAY_PONG:
+                    self.relay_answers = self.relay_known = True
+                    self._pinged_unanswered = False
+                    self._last_pong = time.monotonic()
+                    continue
+                if data == RELAY_PING:
+                    continue  # another peer's ping, broadcast by a relay that does not answer it
                 n = peers_of(data)
                 if n is not None:
                     self.peers = n
@@ -428,6 +489,8 @@ class RelayPeer:
         except Exception:
             pass  # the socket went away; reconnect
         finally:
+            if beat is not None:
+                beat.cancel()
             replaced = self._ws is not ws
             if not replaced:
                 self._ws = None
