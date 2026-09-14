@@ -174,8 +174,21 @@ export function mapEvent(ev, sessionID = '', roles = null, partTypes = null) {
 export const errText = (p) => {
   const e = p && p.error
   if (!e) return 'session error'
-  if (typeof e === 'string') return e
-  return String((e.data && e.data.message) || e.message || e.name || JSON.stringify(e)).slice(0, 2000)
+  if (typeof e === 'string') return unwrapJsonMessage(e)
+  return unwrapJsonMessage(String((e.data && e.data.message) || e.message || e.name || JSON.stringify(e)).slice(0, 2000))
+}
+
+/** An error's words. OpenCode keeps a provider's JSON error body as the message string — the confidential proxy's
+ *  refusal reached the owner's screen as `{"message":"not confidential: …","type":"receipt_unverified"}` — so a message
+ *  that is such a body shows its `message`. */
+export function unwrapJsonMessage(s) {
+  const str = String(s == null ? '' : s)
+  if (!/^\s*\{/.test(str)) return str
+  try {
+    const j = JSON.parse(str)
+    const m = j && ((typeof j.message === 'string' && j.message) || (j.error && typeof j.error.message === 'string' && j.error.message))
+    return m || str
+  } catch { return str }
 }
 
 /** Split an SSE byte stream into events. Kept separate from the transport so it can be tested on a string, and so a

@@ -162,6 +162,8 @@ GET    /session/:id/message                                       POST /session
 POST   /session/:id/message             POST /session/:id/abort   POST /session/:id/permissions/:permID
 PATCH  /session/:id                     DELETE /session/:id
 GET    /path                            GET  /file                         (New session's folder picker)
+GET    /permission                      POST /permission/:permID/reply     (pending asks, so a card survives a session
+                                                                            switch or reload; a Deny with a message)
 GET    /event                           → never proxied as HTTP; `sub` starts the connector's own local SSE read
 ```
 

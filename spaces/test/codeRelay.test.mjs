@@ -106,6 +106,7 @@ test('the allowlist admits exactly the calls the Code section makes, and nothing
     ['GET', '/experimental/session?archived=true'], ['GET', '/agent'], ['GET', '/api/model'], ['GET', '/config'], ['GET', '/config/providers'],
     ['POST', '/session'], ['GET', '/session/ses_abc123/message?directory=%2Fhome%2Fu'], ['POST', '/session/ses_abc/message'],
     ['POST', '/session/ses_abc/abort'], ['POST', '/session/ses_abc/permissions/per_1'], ['POST', '/permission/per_1/reply'], ['PATCH', '/session/ses_abc'],
+    ['GET', '/permission?directory=%2Fx'], // what is still pending — a card comes back after switching sessions (the same asks the stream carries)
     ['DELETE', '/session/ses_abc?directory=%2Fx'],
     // the New-session folder picker: the computer's home, and a folder listing (names only). Neither raises the
     // ceiling — a session the page can already create reads files with `read`/`list` allowed.
@@ -126,7 +127,7 @@ test('the allowlist admits exactly the calls the Code section makes, and nothing
     ['POST', '/question'], ['GET', '/question/que_1/reply'], ['POST', '/question/que_1'], ['POST', '/question/./reply'], ['POST', '/question/que_1/reply/x'],
     ['PUT', '/session/ses_abc'], ['GET', '/session/../config'], ['GET', '//agent'], ['GET', 'agent'], ['DELETE', '/session'],
     ['POST', '/session/ses_abc/permissions/per_1/extra'], ['GET', '/agent#x'],
-    ['GET', '/permission'], ['POST', '/permission'], ['GET', '/permission/per_1/reply'], ['POST', '/permission/per_1/reply/x'],
+    ['POST', '/permission'], ['GET', '/permission/per_1'], ['GET', '/permission/per_1/reply'], ['POST', '/permission/per_1/reply/x'],
   ]
   for (const [m, p] of no) assert.equal(allowedRequest(m, p), false, `${m} ${p}`)
   assert.equal(allowedEventPath('/event'), true)

@@ -4,10 +4,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startAutoRunner } from './code-auto-runner.mjs'
+import { startAutoRunner, scratchOnDisk } from './code-auto-runner.mjs'
 
 const DIR = '/home/u/repo'
 
@@ -37,7 +37,7 @@ function fakeOpenCode({ reviewerText = '{"decision":"allow","severity":10,"rule"
       if (parents[m[1]]) return json([{ info: { id: 'c1', role: 'user' }, parts: [{ type: 'text', text: 'THE PARENT MODEL WROTE THIS TASK PROMPT' }] }])
       return json([
         { info: { id: 'm1', role: 'user' }, parts: [{ type: 'text', text: 'please run the test suite' }] },
-        { info: { id: 'm2', role: 'assistant', providerID: 'anthropic', modelID: 'claude-sonnet-4-6' }, parts: [{ type: 'text', text: 'on it' }] },
+        { info: { id: 'm2', role: 'assistant', providerID: 'anthropic', modelID: 'claude-sonnet-4-6' }, parts: [{ type: 'text', text: 'on it' }, { type: 'tool', tool: 'read', callID: 'call_read1', state: { status: 'running' } }] },
       ])
     }
     if (q.method === 'POST' && url.pathname === '/session') { const id = 'ses_rev' + (++n); sessions.set(id, b); return json({ id, title: b.title }) }
@@ -102,6 +102,53 @@ test('an edit inside the project is allowed at once, once', async (t) => {
   const r = await until(() => replies(oc)[0])
   assert.equal(r.body.reply, 'once', 'never "always"')
   assert.equal(oc.seen.filter((s) => s.path === '/session').length, 0)
+})
+
+// ── the agent's scratch directory (measured 2026-09-14: 22 identical reads of rendered PDF pages, 2 left for the person) ──
+const SCRATCH_ASK = { permission: 'external_directory', patterns: ['/tmp/opencode/*'], metadata: { filepath: '/tmp/opencode/tsv_-3.png', parentDir: '/tmp/opencode' }, tool: { messageID: 'm2', callID: 'call_read1' } }
+
+test('a read in the agent\'s scratch directory is allowed without a review — once the disk agrees', async (t) => {
+  const { oc, mk, verdicts } = await world(t)
+  const checked = []
+  const runner = mk({ scratchCheck: (paths) => { checked.push(paths); return true } })
+  t.after(() => runner.stop())
+  runner.setAuto('ses_main', DIR, true)
+  oc.ask(SCRATCH_ASK)
+  const r = await until(() => replies(oc)[0])
+  assert.equal(r.body.reply, 'once')
+  assert.equal(oc.seen.filter((s) => s.path === '/session').length, 0, 'no reviewer session')
+  assert.equal(verdicts.find((v) => v.rule).rule, 'fast:agent-scratch')
+  assert.deepEqual(checked[0], ['/tmp/opencode', '/tmp/opencode/tsv_-3.png', '/tmp/opencode'], 'the disk is asked about every path the rule rests on')
+})
+
+test('when the disk disagrees the reviewer decides — and it is told the tool and the file, not left to guess', async (t) => {
+  const { oc, mk } = await world(t)
+  const runner = mk({ scratchCheck: () => false })
+  t.after(() => runner.stop())
+  runner.setAuto('ses_main', DIR, true)
+  oc.ask(SCRATCH_ASK)
+  await until(() => replies(oc)[0])
+  const msg = oc.seen.find((s) => s.method === 'POST' && /^\/session\/ses_rev\d+\/message$/.test(s.path))
+  assert.ok(msg, 'a review happened')
+  assert.match(msg.body.parts[0].text, /^tool: read$/m, 'the tool that raised the ask, found by its callID in the transcript')
+  assert.match(msg.body.parts[0].text, /^file: \/tmp\/opencode\/tsv_-3\.png$/m)
+})
+
+test('scratchOnDisk: a real directory of mine, targets inside it — and never through a link out', () => {
+  const root = mkdtempSync(join(tmpdir(), 'scratch-'))
+  const dir = join(root, 'opencode'), outside = join(root, 'elsewhere')
+  mkdirSync(dir); mkdirSync(outside)
+  writeFileSync(join(dir, 'page-1.png'), 'x'); writeFileSync(join(outside, 'secret'), 'x')
+  symlinkSync(outside, join(dir, 'out'))
+  symlinkSync(join(outside, 'missing'), join(dir, 'dangling'))
+  symlinkSync(dir, join(root, 'linked'))
+  assert.equal(scratchOnDisk([dir, join(dir, 'page-1.png')], { dir }), true)
+  assert.equal(scratchOnDisk([join(dir, 'new', 'page-9.png')], { dir }), true, 'a file not written yet: its nearest existing folder decides')
+  assert.equal(scratchOnDisk([join(dir, 'out', 'secret')], { dir }), false, 'a link inside that leads out')
+  assert.equal(scratchOnDisk([join(dir, 'out', 'new.txt')], { dir }), false, 'a new file under a link out')
+  assert.equal(scratchOnDisk([join(dir, 'dangling')], { dir }), false, 'a link to nowhere — writing it would create its target outside')
+  assert.equal(scratchOnDisk([dir], { dir: join(root, 'linked') }), false, 'the scratch directory itself may not be a link')
+  assert.equal(scratchOnDisk([dir], { dir: join(root, 'absent') }), false, 'no directory, no rule')
 })
 
 test('otherwise the SESSION\'S model reviews it in a tool-less throw-away session, and a clear allow is answered once', async (t) => {

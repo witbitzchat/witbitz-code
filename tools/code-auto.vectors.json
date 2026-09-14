@@ -833,6 +833,187 @@
         }
       },
       "stage": "fast-allow"
+    },
+    {
+      "name": "the agent reads a page it rendered into its scratch directory (measured ask, 2026-09-14)",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/opencode/*"
+        ],
+        "metadata": {
+          "filepath": "/tmp/opencode/tsv_-3.png",
+          "parentDir": "/tmp/opencode"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "a subfolder of the scratch directory",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/opencode/convert/*"
+        ],
+        "metadata": {
+          "filepath": "/tmp/opencode/convert/a.txt",
+          "parentDir": "/tmp/opencode/convert"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "the rest of /tmp is the reviewer's",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/*"
+        ],
+        "metadata": {
+          "filepath": "/tmp/x.png",
+          "parentDir": "/tmp"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a look-alike of the scratch directory",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/opencodex/*"
+        ],
+        "metadata": {
+          "filepath": "/tmp/opencodex/a",
+          "parentDir": "/tmp/opencodex"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "climbing out of the scratch directory",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/opencode/../../home/u/*"
+        ],
+        "metadata": {
+          "filepath": "/tmp/opencode/../../home/u/.bashrc",
+          "parentDir": "/tmp/opencode/../../home/u"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "the pattern is scratch but the file is not",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/opencode/*"
+        ],
+        "metadata": {
+          "filepath": "/home/u/.bashrc",
+          "parentDir": "/tmp/opencode"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a key parked in the scratch directory",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/opencode/*"
+        ],
+        "metadata": {
+          "filepath": "/tmp/opencode/id_ed25519",
+          "parentDir": "/tmp/opencode"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a .ssh folder inside the scratch directory",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/opencode/.ssh/*"
+        ],
+        "metadata": {
+          "filepath": "/tmp/opencode/.ssh/config",
+          "parentDir": "/tmp/opencode/.ssh"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "no targets at all",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a relative file under a scratch pattern",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/tmp/opencode/*"
+        ],
+        "metadata": {
+          "filepath": "a.png"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "another outside directory",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/home/u/other/*"
+        ],
+        "metadata": {
+          "filepath": "/home/u/other/a",
+          "parentDir": "/home/u/other"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "writing a note into the scratch directory",
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "/tmp/opencode/pages/notes.md"
+        ],
+        "metadata": {}
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "a glob write into the scratch directory is not a precise target",
+      "req": {
+        "permission": "write",
+        "patterns": [
+          "/tmp/opencode/*"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "writing a secret-looking file into the scratch directory",
+      "req": {
+        "permission": "write",
+        "patterns": [
+          "/tmp/opencode/credentials.json"
+        ],
+        "metadata": {}
+      },
+      "stage": "review"
     }
   ],
   "verdicts": [

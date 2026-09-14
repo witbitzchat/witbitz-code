@@ -21,6 +21,7 @@ import asyncio
 import math
 import os
 import re
+import stat
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -30,7 +31,7 @@ from urllib.parse import quote
 import httpx
 
 from . import _js
-from .auto import action_for, classify_deterministic, log_record, parse_verdict, reviewer_prompt
+from .auto import SCRATCH_DIR, action_for, classify_deterministic, log_record, parse_verdict, reviewer_prompt, scratch_paths
 from .policy import SUBAGENT_GATED
 
 REVIEW_TITLE = "witbitz-auto-review"  # the page never lists a session with this title
@@ -71,11 +72,42 @@ def detail_of(req: dict) -> str:
     return _js.utf16_slice(cmd if isinstance(cmd, str) and cmd else first, 0, MAX_DETAIL)
 
 
+def scratch_on_disk(paths: list[str], directory: str = SCRATCH_DIR) -> bool:
+    """The scratch rule (auto.py) trusts a path's words; the disk must agree before Auto allows on it: the directory is a
+    real one (not a link) this user owns, and every target — as far as it exists — resolves inside it. A link to nowhere
+    is refused too (a write would create its target, wherever that is). Anything unreadable ⇒ False: the reviewer decides."""
+    try:
+        st = os.lstat(directory)
+        if not stat.S_ISDIR(st.st_mode) or (hasattr(os, "getuid") and st.st_uid != os.getuid()):
+            return False
+        root = os.path.realpath(directory, strict=True)
+        for p in paths:
+            cur = p
+            while True:
+                try:
+                    real = os.path.realpath(cur, strict=True)
+                except OSError:
+                    real = None
+                    if os.path.lexists(cur):
+                        return False
+                if real is not None:
+                    if real != root and not real.startswith(root + "/"):
+                        return False
+                    break
+                up = os.path.dirname(cur)
+                if up == cur:
+                    return False
+                cur = up
+        return True
+    except Exception:
+        return False
+
+
 class AutoRunner:
     def __init__(self, *, base: str, auth: Callable[[], dict], client: httpx.AsyncClient, state_path: Path | None,
                  log_path: Path | None, poll_ms: float = 1000, review_timeout_ms: float = 30_000, home: str | None = None,
                  on_verdict: Callable[[dict], Any] = lambda v: None, log: Callable[[str], Any] = lambda m: None,
-                 now: Callable[[], int] = _now_ms) -> None:
+                 now: Callable[[], int] = _now_ms, scratch_check: Callable[[list[str]], bool] = scratch_on_disk) -> None:
         self._root = re.sub(r"/+\Z", "", base or "")
         self._auth = auth
         self._client = client
@@ -87,6 +119,7 @@ class AutoRunner:
         self._on_verdict = on_verdict
         self._log = log
         self._now = now
+        self._scratch_check = scratch_check
         self._auto: dict[str, dict] = {}  # sessionID → {dir, at}
         self._handled: dict[str, int] = {}  # permission id → when it was taken up (so a poll never reviews it twice)
         self._parents: dict[str, dict] = {}  # sessionID → {parent, at} — so a subagent's ask finds its Auto session
@@ -158,11 +191,14 @@ class AutoRunner:
         except Exception:
             return False
 
-    async def _session_context(self, sid: str, directory: str) -> tuple[dict | None, list[str]]:
-        """The session's model and what the person asked for — from its own transcript."""
+    async def _session_context(self, sid: str, directory: str) -> tuple[dict | None, list[str], dict[str, str]]:
+        """The session's model, what the person asked for, and which tool made each call — from its own transcript."""
         _, _, msgs = await self._call("GET", f"/session/{_uri_component(sid)}/message", directory)
-        model, user_messages = None, []
+        model, user_messages, tools = None, [], {}
         for m in msgs if isinstance(msgs, list) else []:
+            for p in (m.get("parts") if isinstance(m, dict) and isinstance(m.get("parts"), list) else []):
+                if isinstance(p, dict) and p.get("type") == "tool" and isinstance(p.get("callID"), str) and isinstance(p.get("tool"), str):
+                    tools[p["callID"]] = p["tool"]
             info = m.get("info") if isinstance(m, dict) and isinstance(m.get("info"), dict) else {}
             if info.get("role") == "assistant" and _js.truthy(info.get("providerID")) and _js.truthy(info.get("modelID")):
                 model = {"providerID": info["providerID"], "modelID": info["modelID"]}
@@ -172,7 +208,7 @@ class AutoRunner:
                                           and isinstance(p.get("text"), str) and not _js.truthy(p.get("synthetic"))))
                 if text:
                     user_messages.append(text)
-        return model, user_messages[-MAX_USER_MESSAGES:]
+        return model, user_messages[-MAX_USER_MESSAGES:], tools
 
     async def _parent_of(self, sid: str, directory: str) -> Any:
         c = self._parents.get(sid)
@@ -238,11 +274,14 @@ class AutoRunner:
         return None
 
     async def _review(self, req: dict, directory: str, owner: str | None = None) -> tuple[dict | None, str, str]:
-        model, user_messages = await self._session_context(owner or req["sessionID"], directory)
+        model, user_messages, tools = await self._session_context(owner or req["sessionID"], directory)
         if not model:
             return None, "", "the session has no model to review with yet"
         label = f"{_js.js_string(model['providerID'])}/{_js.js_string(model['modelID'])}"
-        prompt = reviewer_prompt(req, directory, user_messages)
+        # A subagent's ask names a call in ITS transcript, not the owner's: then there is no tool line, as before.
+        call = req.get("tool") if isinstance(req.get("tool"), dict) else {}
+        tool = tools.get(call["callID"], "") if isinstance(call.get("callID"), str) else ""
+        prompt = reviewer_prompt(req, directory, user_messages, tool)
         _, _, created = await self._call("POST", "/session", directory,
                                          {"title": REVIEW_TITLE, "permission": [{"permission": "*", "pattern": "*", "action": "deny"}]})
         rid = created.get("id") if isinstance(created, dict) else None
@@ -288,7 +327,10 @@ class AutoRunner:
 
     async def _decide(self, req: dict, directory: str, owner: str | None = None) -> None:
         t0 = self._now()
-        det = classify_deterministic(req, directory=directory, home=self._home) or await self._classify_subagent(req, directory)
+        det = classify_deterministic(req, directory=directory, home=self._home)
+        if det and det["rule"] == "fast:agent-scratch" and not self._scratch_check(scratch_paths(req)):
+            det = None  # the disk disagrees: the reviewer's
+        det = det or await self._classify_subagent(req, directory)
         model, note = "", ""
         if det:
             stage = det["stage"]

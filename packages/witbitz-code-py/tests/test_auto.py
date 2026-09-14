@@ -30,7 +30,7 @@ from test_connector_e2e import JsConnector, PyClient, PyConnector, Rig, run
 from witbitz_code import _js
 from witbitz_code.auto import (SEVERITY_CEILING, action_for, classify_deterministic, log_record, parse_verdict, posix_normalize,
                                reviewer_prompt)
-from witbitz_code.auto_runner import AutoRunner
+from witbitz_code.auto_runner import AutoRunner, scratch_on_disk
 
 VECTORS = json.loads((REPO / "tools" / "code-auto.vectors.json").read_text(encoding="utf-8"))
 DIR = "/home/u/repo"
@@ -73,6 +73,10 @@ TOKENS = ["ls", "cat", "git", "status", "log", "diff", "grep", "-rn", "rm", "-rf
 PATHS = ["src/a.ts", "/home/u/repo/a", "/home/u/repo/", "/home/u/repo", "/home/u/repoX/a", "../x", "./a/../../b", "a/./b", "//home/u/repo/a",
          ".env", ".env.sample", "config/.env.local", ".git/HEAD", "a/.ssh/k", "x.key", "X.KEY", "my-secret", "Credentials.json",
          "id_ed25519.pub", "*.ts", "a?b", "[x]", "{a,b}", "", "😀/ünï", "a/b/", "..", ".", "/", "a\nb", ".env. x", "k.pem\n"]
+SCRATCH_BITS = ["/tmp/opencode/*", "/tmp/opencode", "/tmp/opencode/", "/tmp/opencode/a.png", "/tmp/opencode/sub/*", "/tmp/opencodex/*",
+                "/tmp/*", "/tmp/opencode/../x/*", "//tmp/opencode/*", "/tmp/./opencode/p.png", "/tmp/opencode/.ssh/*", "/tmp/opencode/id_rsa",
+                "/tmp/opencode/*.png", "/tmp/opencode/secret.txt", "tmp/opencode/*", "", "/tmp/opencode/😀/*", "/tmp/opencode/a\nb", "/*", "*"]
+SCRATCH_META = [None, 7, True, [], "", "/tmp/opencode", "/tmp/opencode/a.png", "/etc/passwd", "a.png", "/tmp/opencode/.env", "/tmp/opencode/../../x"]
 VERDICT_BITS = ['{"decision":"allow","severity":10}', '{"decision":"deny","severity":"85","rule":"soft:x","reason":"r"}',
                 '{"decision":"ask"}', '```json\n{"decision":"allow","severity":69.5}\n```', '{"decision":"allow","severity":null}',
                 '{"decision":"allow","severity":true}', '{"decision":"allow","severity":"  "}', '{"decision":"allow","severity":-3}',
@@ -103,9 +107,20 @@ def _parity_inputs() -> dict:
         reqs.append({"permission": "bash", "patterns": [cmd[:20]], "metadata": {"command": cmd} if rnd.random() < 0.9 else {}})
     for _ in range(800):
         reqs.append({"permission": rnd.choice(["edit", "write", "read", "webfetch"]), "patterns": rnd.sample(PATHS, rnd.randint(0, 3)), "metadata": {}})
+    for _ in range(800):  # the scratch directory: external_directory asks, and edits/writes aimed at it
+        md: object = {}
+        if rnd.random() < 0.15:
+            md = rnd.choice([[], "x", None, 5])
+        else:
+            for k in ("filepath", "parentDir"):
+                if rnd.random() < 0.7:
+                    md[k] = rnd.choice(SCRATCH_META + SCRATCH_BITS)
+        pats: object = rnd.sample(SCRATCH_BITS, rnd.randint(0, 3)) if rnd.random() < 0.9 else rnd.choice([None, "/tmp/opencode/*", {}])
+        reqs.append({"permission": rnd.choice(["external_directory", "external_directory", "edit", "write"]), "patterns": pats, "metadata": md})
     texts = [v["text"] for v in VECTORS["verdicts"]] + [rnd.choice(["", "ok ", "```", "\n"]).join(rnd.sample(VERDICT_BITS, rnd.randint(1, 3))) for _ in range(600)]
     prompts = [{"req": reqs[i], "directory": rnd.choice([DIR, "/r" * 400, "😀" * 600]),
-                "userMessages": [rnd.choice(["run the tests", "  ", "x" * 2000, "😀" * 900, 7, None]) for _ in range(rnd.randint(0, 9))]}
+                "userMessages": [rnd.choice(["run the tests", "  ", "x" * 2000, "😀" * 900, 7, None]) for _ in range(rnd.randint(0, 9))],
+                "tool": rnd.choice(["read", "edit", "", None, 7, "t" * 100, "😀" * 40])}
                for i in range(0, len(reqs), 25)]
     paths = PATHS + [rnd.choice(["/", ""]) + "/".join(rnd.choice(["a", "..", ".", "", "b"]) for _ in range(rnd.randint(0, 6))) for _ in range(500)]
     return {"directory": DIR, "home": "/home/u", "reqs": reqs, "texts": texts, "prompts": prompts, "paths": paths}
@@ -124,7 +139,7 @@ def test_parity_with_the_js_module_on_generated_inputs():
         pv = parse_verdict(text)
         assert [pv, action_for(pv)] == [v, act], f"verdict differs for {text!r}"
     for p, jp in zip(data["prompts"], js["prompts"]):
-        assert reviewer_prompt(p["req"], p["directory"], p["userMessages"]) == jp
+        assert reviewer_prompt(p["req"], p["directory"], p["userMessages"], p["tool"]) == jp
     for req, jl in zip(data["reqs"], js["logs"]):
         assert log_record(req=req, stage="reviewer", verdict={"severity": 5, "rule": "r"}, action="ask", model="m", ms=1, at=7) == jl
     assert [posix_normalize(p) for p in data["paths"]] == js["normalize"]
@@ -191,7 +206,7 @@ class LoopOpenCode:
                     msgs = [{"info": {"id": "m1", "role": "user"}, "parts": [{"type": "text", "text": "please run the test suite"}]}]
                     if with_model:
                         msgs.append({"info": {"id": "m2", "role": "assistant", "providerID": "anthropic", "modelID": "claude-sonnet-4-6"},
-                                     "parts": [{"type": "text", "text": "on it"}]})
+                                     "parts": [{"type": "text", "text": "on it"}, {"type": "tool", "tool": "read", "callID": "call_read1", "state": {"status": "running"}}]})
                     return self._json(msgs)
                 if self.command == "POST" and path == "/session":
                     with outer.lock:
@@ -244,13 +259,14 @@ class LoopOpenCode:
 
 def loop_world(tmp_path: Path, **opts: Any):
     review_timeout_ms = opts.pop("review_timeout_ms", 3000)
+    scratch_check = opts.pop("scratch_check", scratch_on_disk)
     oc = LoopOpenCode(**opts)
     verdicts: list[dict] = []
 
     def make(client: httpx.AsyncClient) -> AutoRunner:
         return AutoRunner(base=oc.url, auth=lambda: {"authorization": "Basic x"}, client=client, state_path=tmp_path / "auto.json",
                           log_path=tmp_path / "auto-log.jsonl", poll_ms=30, review_timeout_ms=review_timeout_ms, home="/home/u",
-                          on_verdict=verdicts.append)
+                          on_verdict=verdicts.append, scratch_check=scratch_check)
     return oc, verdicts, make
 
 
@@ -313,6 +329,59 @@ def test_loop_an_edit_inside_the_project_is_allowed_once(tmp_path):
         assert oc.replies()[0]["body"] == {"reply": "once"}, "never 'always'"
         assert oc.calls("POST", "/session") == []
     with_runner(tmp_path, body)
+
+
+# ── the agent's scratch directory (measured 2026-09-14: 22 identical reads of rendered PDF pages, 2 left for the person) ──
+SCRATCH_ASK = {"permission": "external_directory", "patterns": ["/tmp/opencode/*"],
+               "metadata": {"filepath": "/tmp/opencode/tsv_-3.png", "parentDir": "/tmp/opencode"}, "tool": {"messageID": "m2", "callID": "call_read1"}}
+
+
+def test_loop_a_read_in_the_scratch_directory_is_allowed_without_a_review_once_the_disk_agrees(tmp_path):
+    checked: list = []
+
+    def check(paths):
+        checked.append(paths)
+        return True
+
+    async def body(oc, runner, verdicts, make, client):
+        runner.set_auto("ses_main", DIR, True)
+        oc.ask(**SCRATCH_ASK)
+        assert await until(lambda: oc.replies(), 4)
+        assert oc.replies()[0]["body"] == {"reply": "once"}
+        assert oc.calls("POST", "/session") == [], "no reviewer session"
+        assert await until(lambda: verdicts, 2)
+        assert verdicts[0]["rule"] == "fast:agent-scratch"
+        assert checked[0] == ["/tmp/opencode", "/tmp/opencode/tsv_-3.png", "/tmp/opencode"]
+    with_runner(tmp_path, body, scratch_check=check)
+
+
+def test_loop_when_the_disk_disagrees_the_reviewer_decides_and_is_told_the_tool_and_the_file(tmp_path):
+    async def body(oc, runner, verdicts, make, client):
+        runner.set_auto("ses_main", DIR, True)
+        oc.ask(**SCRATCH_ASK)
+        assert await until(lambda: oc.replies(), 4)
+        [msg] = oc.calls("POST", r"/session/ses_rev\d+/message")
+        assert re.search(r"^tool: read$", msg["body"]["parts"][0]["text"], re.M)
+        assert re.search(r"^file: /tmp/opencode/tsv_-3\.png$", msg["body"]["parts"][0]["text"], re.M)
+    with_runner(tmp_path, body, scratch_check=lambda paths: False)
+
+
+def test_scratch_on_disk_a_real_directory_of_mine_and_never_through_a_link_out(tmp_path):
+    d, outside = tmp_path / "opencode", tmp_path / "elsewhere"
+    d.mkdir()
+    outside.mkdir()
+    (d / "page-1.png").write_text("x")
+    (outside / "secret").write_text("x")
+    (d / "out").symlink_to(outside)
+    (d / "dangling").symlink_to(outside / "missing")
+    (tmp_path / "linked").symlink_to(d)
+    assert scratch_on_disk([str(d), str(d / "page-1.png")], str(d))
+    assert scratch_on_disk([str(d / "new" / "page-9.png")], str(d)), "a file not written yet: its nearest existing folder decides"
+    assert not scratch_on_disk([str(d / "out" / "secret")], str(d)), "a link inside that leads out"
+    assert not scratch_on_disk([str(d / "out" / "new.txt")], str(d))
+    assert not scratch_on_disk([str(d / "dangling")], str(d)), "a link to nowhere"
+    assert not scratch_on_disk([str(d)], str(tmp_path / "linked")), "the scratch directory itself may not be a link"
+    assert not scratch_on_disk([str(d)], str(tmp_path / "absent"))
 
 
 def test_loop_the_sessions_model_reviews_in_a_tool_less_session_and_a_clear_allow_is_answered_once(tmp_path):

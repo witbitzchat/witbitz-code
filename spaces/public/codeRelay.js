@@ -275,6 +275,9 @@ const ALLOW = [
   // The same answer with a MESSAGE for the model — how a person's Deny says "stop and ask me" (the route above takes none).
   // It grants nothing the route above does not: it only answers an ask that is already pending.
   ['POST', `/permission/${SEG}/reply`],
+  // What is still waiting for an answer — so a card comes back after switching sessions or reloading, while the agent sits
+  // blocked. The same asks (and details) the page already receives live as permission.asked; answering is the route above.
+  ['GET', '/permission'],
   ['PATCH', `/session/${SEG}`],
   ['DELETE', `/session/${SEG}`],
   // New session's folder picker: the computer's home, and folder listings under it (names, never contents). Neither

@@ -67,6 +67,16 @@ The reviewer session is deleted after each decision. Its title carries a marker 
   directory or the filesystem, disabling security controls.
 - **environment**: the session's project directory is the trust boundary; per-computer additions later
   (`~/.witbitz/code/auto-policy.json`: trusted domains, protected paths).
+- **the agent's scratch directory** (2026-09-14): `/tmp/opencode` is allowed without a model (`fast:agent-scratch`) — an
+  `external_directory` ask whose patterns and `metadata.filepath`/`parentDir` all lie inside it, or an edit/write whose
+  precise targets do; sensitive names (`.ssh/`, keys, `.env`, secret/credential) still go to the reviewer. Measured: an
+  agent reading scanned PDFs rendered pages there with `pdftoppm` and opened them one by one — 22 identical asks, which
+  the reviewer answered allow 20 times and "ask" twice, telling the person "a write" about a read. The runner acts on the
+  rule only when the disk agrees (`scratchOnDisk`): the directory is a real one this user owns, and no target resolves
+  through a link outside it (a dangling link counts as outside). The rest of `/tmp` is still the reviewer's.
+- **what the reviewer sees**: besides the command or targets, the TOOL that raised the ask (found by its `callID` in the
+  owner's transcript — a subagent's call is not there, so no line) and the ask's own `file` — an `external_directory` ask
+  alone does not say whether the agent reads or writes.
 
 ## 4. Records
 

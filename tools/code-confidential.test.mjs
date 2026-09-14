@@ -6,9 +6,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   startConfidentialProxy, confidentialModels, stampFloor, unreadableParts, convertUnreadable, makeTinfoilReader,
-  makeAnswerGate, proxyConfig, proxyPortFor,
+  makeAnswerGate, proxyConfig, proxyPortFor, HOLD_BEFORE_LAPSE_SEC,
 } from './code-confidential.mjs'
 import { _resetGatewayAttestCache } from '../agent/gatewayAttest.mjs'
+import { verifyInferenceReceipt } from '../agent/inferenceReceipt.mjs'
 
 const FIX = new URL('../agent/fixtures/inference-receipt/', import.meta.url)
 const STREAM = readFileSync(new URL('stream.sse', FIX), 'utf8')
@@ -70,6 +71,68 @@ test('a receipt that does not match what arrived ends the step with an error —
   const text = await (await post(SAY_OK)).text()
   assert.match(text, /not confidential: .*receipt_resp_hash/)
   assert.ok(!/"finish_reason":"stop"/.test(text) && !text.includes('[DONE]'), text)
+})
+
+// ── receipt_verification_window: the one refusal asked again (the owner: "I sometimes get this") ──
+/** A verifier that says `receipt_verification_window` for the attempts listed (1-based), and really verifies the rest. */
+function lapsing(...lapsed) {
+  let n = 0
+  const fn = async (args) => (lapsed.includes(++n) ? { ok: false, error: 'receipt_verification_window' } : verifyInferenceReceipt(args))
+  fn.count = () => n
+  return fn
+}
+const noWait = async () => {}
+const count = (text, re) => (text.match(re) || []).length
+
+test('a lapsed proof before anything reached OpenCode is asked again, with a fresh nonce, and verified again', async (t) => {
+  const verify = lapsing(1)
+  let nonces = 0
+  const logs = []
+  const { net, post } = await proxy(t, { verify, sleep: noWait, nonce: () => { nonces++; return META.nonce }, log: (l) => logs.push(l) })
+  const r = await post({ ...SAY_OK, stream: false })
+  assert.equal(r.status, 200)
+  assert.equal((await r.json()).choices[0].message.content, 'OK.')
+  assert.equal(net.calls.length, 2, 'asked twice')
+  assert.equal(nonces, 2, 'each call has its own receipt nonce')
+  assert.equal(verify.count(), 2, 'the second answer went through the whole check')
+  assert.match(logs.join('\n'), /REFUSED deepseek\/deepseek-v4-flash — receipt_verification_window[\s\S]*↻/)
+})
+
+test('an answer already streaming when its proof lapsed is not asked again — no text twice, and the message says what to do', async (t) => {
+  const { net, post } = await proxy(t, { verify: lapsing(1), sleep: noWait })
+  const text = await (await post(SAY_OK)).text()
+  assert.equal(net.calls.length, 1)
+  assert.equal(count(text, /"content":"OK"/g), 1)
+  assert.match(text, /TrustedRouter renewed its proof of the model's enclave while this answer was on its way[^"]*Send your message again to continue\. \(receipt_verification_window\)/)
+  assert.ok(!text.includes('[DONE]') && !/"finish_reason":"stop"/.test(text), 'nothing committed')
+})
+
+test('an answer that starts close to the end of the last proof is held back whole, so a lapse is asked again unseen', async (t) => {
+  let clock = META.nowMs
+  const verify = lapsing(2)
+  const { net, post } = await proxy(t, { verify, sleep: noWait, now: () => clock })
+  await (await post(SAY_OK)).text() // learns when this model's proof ends (the captured receipt: 1788680807)
+  clock = (1788680807 - HOLD_BEFORE_LAPSE_SEC + 10) * 1000
+  const text = await (await post(SAY_OK)).text()
+  assert.equal(net.calls.length, 3, 'the held answer was asked again')
+  assert.equal(count(text, /"content":"OK"/g), 1, 'the refused answer never reached OpenCode')
+  assert.match(text, /"finish_reason":"stop"[\s\S]*data: \[DONE\]/)
+  assert.ok(!text.includes('error'), text)
+})
+
+test('a proof far from its end streams live; asked again and lapsed again is a real refusal; other reasons are never asked again', async (t) => {
+  const { net, post } = await proxy(t, { verify: lapsing(1, 2), sleep: noWait })
+  const r = await post({ ...SAY_OK, stream: false })
+  assert.equal(r.status, 502)
+  assert.match((await r.json()).error.message, /receipt_verification_window/)
+  assert.equal(net.calls.length, 2, 'once more, not a loop')
+  const other = await proxy(t, { sleep: noWait, verify: async () => ({ ok: false, error: 'receipt_resp_hash' }) })
+  const r2 = await other.post({ ...SAY_OK, stream: false })
+  assert.match((await r2.json()).error.message, /not confidential: .*receipt_resp_hash/)
+  assert.equal(other.net.calls.length, 1)
+  const live = makeAnswerGate()
+  assert.equal(live.push('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n').length, 1)
+  assert.equal(makeAnswerGate({ hold: true }).push('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n').length, 0)
 })
 
 test('a caller that did not ask to stream gets one verified chat.completion', async (t) => {

@@ -319,6 +319,50 @@ def _edit_inside_project(patterns: Any, directory: Any) -> bool:
     return True
 
 
+# ── the agent's scratch directory ─────────────────────────────────────────────────────────────────────────────────────
+# Measured on a real session (2026-09-14): an agent reading scanned PDFs rendered the pages into /tmp/opencode and opened
+# them one by one — every read an external_directory ask for `/tmp/opencode/*`. Left to the reviewer, 22 identical asks
+# got 20 allows and 2 "ask"s. Reading and writing under this ONE directory is allowed; the rest of /tmp, and everything
+# else outside the project, is still the reviewer's. auto_runner.py also checks the disk before acting on it.
+SCRATCH_DIR = "/tmp/opencode"
+_GLOB = re.compile(r"[*?\[\]{}]")
+
+
+def _in_scratch(p: Any, glob: bool) -> bool:
+    if not isinstance(p, str) or not p:
+        return False
+    v = p[:-2] if glob and p.endswith("/*") else p  # OpenCode asks for a directory as `<dir>/*`
+    if _GLOB.search(v) or not v.startswith("/"):
+        return False
+    a = posix_normalize(v)
+    return (a == SCRATCH_DIR or a.startswith(SCRATCH_DIR + "/")) and not _sensitive_path(a[len(SCRATCH_DIR):])
+
+
+def _metadata_of(req: Any) -> dict:
+    md = _get(req, "metadata")
+    return md if isinstance(md, dict) else {}
+
+
+def _ask_in_scratch(req: dict) -> bool:
+    md = _metadata_of(req)
+    pats = _get(req, "patterns")
+    pats = pats if isinstance(pats, list) else []
+    extra = [x for x in (md.get("filepath", _js.UNDEFINED), md.get("parentDir", _js.UNDEFINED)) if x is not _js.UNDEFINED and x is not None]
+    return len(pats) > 0 and all(_in_scratch(x, True) for x in pats) and all(_in_scratch(x, False) for x in extra)
+
+
+def _edit_in_scratch(patterns: Any) -> bool:
+    return isinstance(patterns, list) and len(patterns) > 0 and all(_in_scratch(x, False) for x in patterns)
+
+
+def scratch_paths(req: Any) -> list[str]:
+    """The paths a scratch decision rests on — for the runner's look at the disk."""
+    md = _metadata_of(req)
+    pats = _get(req, "patterns")
+    items = [*(pats if isinstance(pats, list) else []), md.get("filepath"), md.get("parentDir")]
+    return [posix_normalize(x[:-2] if x.endswith("/*") else x) for x in items if isinstance(x, str) and x]
+
+
 def classify_deterministic(req: Any, *, directory: Any = None, home: Any = None) -> dict | None:
     """The model-free layer. None ⇒ the reviewer decides."""
     if not isinstance(req, dict) or not isinstance(req.get("permission"), str):
@@ -341,6 +385,11 @@ def classify_deterministic(req: Any, *, directory: Any = None, home: Any = None)
         return None
     if permission in ("edit", "write") and _edit_inside_project(_get(req, "patterns"), directory):
         return {"stage": "fast-allow", "decision": "allow", "rule": "fast:edit-in-project", "reason": "an edit inside the project to an ordinary file"}
+    scratch = {"stage": "fast-allow", "decision": "allow", "rule": "fast:agent-scratch", "reason": f"the agent's own intermediate files under {SCRATCH_DIR}"}
+    if permission == "external_directory" and _ask_in_scratch(req):
+        return scratch
+    if permission in ("edit", "write") and _edit_in_scratch(_get(req, "patterns")):
+        return scratch
     return None
 
 
@@ -350,13 +399,13 @@ Decide whether it can run without asking them.
 
 ALLOW — work that plainly serves the person's latest request inside the project directory: builds, tests, linters,
 formatters, installing packages from the project's own manifest, local git that does not rewrite published history,
-reading and searching.
+reading and searching; the agent's own intermediate files under /tmp/opencode (its scratch directory).
 
 SOFT DENY — deny unless the person's recent messages clearly ask for exactly this action:
 network uploads or downloads the task does not need; piping a download into a shell (curl … | sh); deleting anything
 outside build, cache or generated directories; git push (above all --force) and history rewrites of shared branches;
 deploy, publish or release commands; reading, printing or moving credentials, tokens, keys or secret stores; changing
-system configuration; sudo; any path outside the project directory; long-running servers exposed beyond localhost.
+system configuration; sudo; any other path outside the project directory; long-running servers exposed beyond localhost.
 
 HARD DENY — always deny: sending code, secrets or environment variables to an outside destination (exfiltration);
 destroying the home directory or the filesystem; disabling security controls.
@@ -378,15 +427,21 @@ def _cut(s: Any, n: int) -> str:
     return _js.utf16_slice(t, 0, n) + f" …[{length - n} more chars]" if length > n else t
 
 
-def reviewer_prompt(req: Any, directory: Any, user_messages: Any = None) -> dict:
+def reviewer_prompt(req: Any, directory: Any, user_messages: Any = None, tool: Any = "") -> dict:
+    """`tool`: the tool that raised the ask (read, edit, bash…), when the runner found it in the transcript."""
     r = req if isinstance(req, dict) else {}
     command = _command_of(r) or ""
+    md = _get(r, "metadata")
+    fp = _get(md, "filepath") if isinstance(md, dict) else _js.UNDEFINED
+    file = fp if not command and _js.truthy(md) and isinstance(fp, str) else ""
     msgs = [m for m in (user_messages if isinstance(user_messages, list) else []) if isinstance(m, str) and _js.trim(m)][-MAX_MESSAGES:]
     patterns = _get(r, "patterns")
     lines = [
         "<request>",
         f"permission: {_cut(_get(r, 'permission'), 64)}",
         f"command: {_cut(command, MAX_REQUEST_CHARS)}" if command else f"targets: {_cut(_js.stringify(patterns if _js.truthy(patterns) else []), MAX_REQUEST_CHARS)}",
+        *([f"tool: {_cut(tool, 64)}"] if isinstance(tool, str) and tool else []),
+        *([f"file: {_cut(file, 1024)}"] if file else []),
         f"project_directory: {_cut(directory, 512)}",
         "</request>",
         '<recent_user_messages oldest_first="true">',

@@ -19,6 +19,11 @@
 //          usage, [DONE] — is held until TrustedRouter's signed inference receipt verifies for these exact request and
 //          response bytes (inferenceReceipt.mjs). A receipt that does not verify ends the step with an error instead, so
 //          OpenCode runs no tool and records the failure: "not confidential: <reason>".
+//       4. ONE refusal is asked again (agent/attestedRetry.mjs): `receipt_verification_window`. TrustedRouter renews its
+//          proof of the model's enclave every 900 s and signs the receipt when the answer ENDS, so an answer still
+//          streaming as a proof lapses is refused (the owner: "I sometimes get this"). A fresh call re-runs the whole
+//          check. It can only be asked again while nothing of the refused answer has reached OpenCode — so an answer
+//          that STARTS near the end of the last proof seen is held back whole (like a tool call) instead of streamed.
 //
 // Who pays: the user — TrustedRouter with their key (OpenCode's own), Tinfoil with theirs. Witbitz is not on this path.
 import http from 'node:http'
@@ -29,6 +34,7 @@ import { join } from 'node:path'
 import { CATALOG } from '../agent/modelCatalog.mjs'
 import { verifyGatewayAttestation } from '../agent/gatewayAttest.mjs'
 import { newReceiptNonce, newSseCapture, feedSsePayload, verifyInferenceReceipt } from '../agent/inferenceReceipt.mjs'
+import { RETRYABLE, isRetryableReceiptFailure } from '../agent/attestedRetry.mjs'
 import { callAttestedTool } from '../agent/attestedTool.mjs'
 import { makeTinfoilVision } from '../agent/tinfoilVision.mjs'
 import { makeTinfoilExtractor } from '../agent/tinfoilDocRead.mjs'
@@ -129,11 +135,12 @@ export function stampFloor(req) {
 // ── the answer ───────────────────────────────────────────────────────────────────────────────────────────────────────
 /** Splits an SSE byte stream into frames; for each `data:` payload, decides whether it may go to OpenCode NOW. Answer text
  *  and reasoning flow live; from the first event that commits anything (tool calls, a finish reason, usage, [DONE], an
- *  error) everything is held, in order, until the receipt verdict. The receipt event itself never reaches OpenCode. */
-export function makeAnswerGate() {
+ *  error) everything is held, in order, until the receipt verdict. The receipt event itself never reaches OpenCode.
+ *  `hold`: nothing flows live — the whole answer waits for the verdict (so a refusal can still be asked again). */
+export function makeAnswerGate({ hold = false } = {}) {
   const capture = newSseCapture()
   const held = []
-  let holding = false, buf = ''
+  let holding = hold, buf = ''
   const live = (ev) => {
     if (!ev || ev.error || ev.usage) return false
     const ch = ev.choices && ev.choices[0]
@@ -209,6 +216,27 @@ export function tinfoilKey(envFile = process.env.OPENCODE_ENV_FILE || join(homed
   return v
 }
 
+// ── the one refusal asked again ──────────────────────────────────────────────────────────────────────────────────────
+// An answer that starts this close to the end of the last proof seen for its model is held back whole. Longer answers
+// that start earlier can still straddle a renewal; those end with the refusal below, which says to send again.
+export const HOLD_BEFORE_LAPSE_SEC = 90
+export const RETRY_DELAY_MS = 600 // the beat the gateway needs to finish the renewal the lapsed call set off
+
+/** The receipt's own timing, for the log only (never trusted: the verdict comes from verifyInferenceReceipt). */
+function receiptTiming(capture) {
+  try {
+    const c = JSON.parse(Buffer.from(capture.receipt.payload, 'base64url').toString('utf8'))
+    const up = c.upstream || {}
+    return ` (receipt signed ${c.iat}, proof ${up.verified_at}–${up.verification_expires_at})`
+  } catch { return '' }
+}
+
+/** What the person sees when a receipt did not verify. */
+export function refusalMessage(label, reason) {
+  if (reason === RETRYABLE) return `${label}: TrustedRouter renewed its proof of the model's enclave while this answer was on its way, so the answer could not be verified and was not used — nothing it asked to run was run. Send your message again to continue. (${reason})`
+  return `not confidential: TrustedRouter's receipt for ${label} did not verify (${reason}). The answer was not used — try again.`
+}
+
 // ── the proxy ────────────────────────────────────────────────────────────────────────────────────────────────────────
 const HOP = new Set(['host', 'connection', 'content-length', 'transfer-encoding', 'keep-alive', 'accept-encoding', 'expect'])
 const forwardHeaders = (h) => Object.fromEntries(Object.entries(h).filter(([k]) => !HOP.has(k.toLowerCase())))
@@ -227,7 +255,9 @@ const readBody = (req) => new Promise((resolve, reject) => {
 export function startConfidentialProxy({
   port = 0, host = '127.0.0.1', upstream = TR_UPSTREAM, fetchImpl = fetch, models = confidentialModels(),
   gate, nonce = newReceiptNonce, now = () => Date.now(), key = tinfoilKey, reader, log = console.error, policies,
+  verify = verifyInferenceReceipt, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
 } = {}) {
+  const proofEnds = new Map() // model → verification_expires_at (s) of its last VERIFIED receipt
   let gateCache = null
   const checkGateway = gate || (async () => {
     if (gateCache && now() - gateCache.at < GATE_TTL_MS && gateCache.ok) return gateCache
@@ -278,31 +308,50 @@ export function startConfidentialProxy({
       if (!conf.vision) ({ body } = await convertUnreadable(body, { label, toText: toTextFor() }))
       const g = await checkGateway()
       if (!g || !g.ok) throw refuse(502, `${label}: TrustedRouter's gateway did not prove it runs attested code (${(g && g.error) || 'no attestation'}), so nothing was sent.`, 'gateway_unattested')
-      const n = nonce()
-      const bytes = JSON.stringify(stampFloor(body))
-      const headers = { ...forwardHeaders(req.headers), 'content-type': 'application/json', 'x-inference-receipt': n }
-      const up = await fetchImpl(target, { method: 'POST', headers, body: bytes, signal: ctrl.signal })
-      if (!up.ok) {
-        const text = await up.text()
-        res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/json' }); res.end(text)
-        return
+      const once = async (attempt) => {
+        const ends = proofEnds.get(body.model)
+        const hold = attempt > 1 || (ends !== undefined && now() / 1000 >= ends - HOLD_BEFORE_LAPSE_SEC)
+        const n = nonce()
+        const bytes = JSON.stringify(stampFloor(body))
+        const headers = { ...forwardHeaders(req.headers), 'content-type': 'application/json', 'x-inference-receipt': n }
+        const up = await fetchImpl(target, { method: 'POST', headers, body: bytes, signal: ctrl.signal })
+        if (!up.ok) {
+          const text = await up.text()
+          if (res.headersSent) throw refuse(502, `${label}: TrustedRouter answered ${up.status} when asked again (${text.slice(0, 160)})`, 'upstream_error')
+          res.writeHead(up.status, { 'content-type': up.headers.get('content-type') || 'application/json' }); res.end(text)
+          return
+        }
+        const answer = makeAnswerGate({ hold })
+        if (wantsStream && !res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+        const dec = new TextDecoder()
+        let streamed = false
+        for await (const c of up.body) {
+          const frames = answer.push(dec.decode(c, { stream: true }))
+          if (wantsStream && frames.length) { for (const f of frames) res.write(f); streamed = true }
+        }
+        answer.push(dec.decode() + '\n\n')
+        const v = await verify({ capture: answer.capture, requestBody: bytes, nonce: n, now: now(), fetchImpl, ...(policies ? { policies } : {}) })
+        if (!v.ok) {
+          log(`code-confidential: REFUSED ${body.model} — ${v.error}${v.error === RETRYABLE ? receiptTiming(answer.capture) : ''}${hold ? ' (held back)' : streamed ? ' (after streaming)' : ''}`)
+          const e = refuse(502, refusalMessage(label, v.error), 'receipt_unverified')
+          e.streamed = streamed
+          throw e
+        }
+        const exp = v.claims && v.claims.upstream && v.claims.upstream.verification_expires_at
+        if (Number.isFinite(exp)) proofEnds.set(body.model, exp)
+        if (wantsStream) { for (const f of answer.held()) res.write(f); res.end(); return }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(completionOf(answer.events(), body.model)))
       }
-      const answer = makeAnswerGate()
-      if (wantsStream) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
-      const dec = new TextDecoder()
-      for await (const c of up.body) {
-        const frames = answer.push(dec.decode(c, { stream: true }))
-        if (wantsStream) for (const f of frames) res.write(f)
+      try {
+        await once(1)
+      } catch (e) {
+        if (ctrl.signal.aborted || e.streamed || !isRetryableReceiptFailure(e)) throw e
+        log(`code-confidential: ↻ ${body.model} — ${RETRYABLE}, nothing had reached OpenCode; asking once more`)
+        await sleep(RETRY_DELAY_MS)
+        if (ctrl.signal.aborted) return
+        await once(2) // verified again from scratch, or it refuses for real
       }
-      answer.push(dec.decode() + '\n\n')
-      const v = await verifyInferenceReceipt({ capture: answer.capture, requestBody: bytes, nonce: n, now: now(), fetchImpl, ...(policies ? { policies } : {}) })
-      if (!v.ok) {
-        log(`code-confidential: REFUSED ${body.model} — ${v.error}`)
-        throw refuse(502, `not confidential: TrustedRouter's receipt for ${label} did not verify (${v.error}). The answer was not used — try again.`, 'receipt_unverified')
-      }
-      if (wantsStream) { for (const f of answer.held()) res.write(f); res.end(); return }
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(completionOf(answer.events(), body.model)))
     } catch (e) {
       if (ctrl.signal.aborted) return
       fail(e, wantsStream)

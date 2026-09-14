@@ -17,10 +17,10 @@
 //
 //   const auto = startAutoRunner({ base, auth, statePath, logPath, onVerdict })
 //   auto.setAuto(sessionID, directory, on) · auto.sessions() · auto.stop()
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, renameSync } from 'node:fs'
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, renameSync, lstatSync, realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { classifyDeterministic, reviewerPrompt, parseVerdict, actionFor, logRecord } from './code-auto.mjs'
+import { classifyDeterministic, reviewerPrompt, parseVerdict, actionFor, logRecord, scratchPaths, SCRATCH_DIR } from './code-auto.mjs'
 import { SUBAGENT_GATED } from './code-opencode-policy.mjs'
 
 const REVIEW_TITLE = 'witbitz-auto-review' // the page never lists a session with this title
@@ -36,7 +36,36 @@ const actionOf = (rules, perm) => { let a = null; for (const r of rules || []) i
 /** What the ask is about, for the person's own page (the verdict is sealed to it, like the ask) — never for the log. */
 const detailOf = (req) => String((req.metadata && typeof req.metadata.command === 'string' && req.metadata.command) || (Array.isArray(req.patterns) && typeof req.patterns[0] === 'string' ? req.patterns[0] : '')).slice(0, MAX_DETAIL)
 
-export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath, logPath, pollMs = 1000, reviewTimeoutMs = 30_000, home = homedir(), onVerdict = () => {}, log = console.error, now = Date.now }) {
+/**
+ * The scratch rule (code-auto.mjs) trusts a path's words; the disk must agree before Auto allows on it: the directory is a
+ * real one (not a link) this user owns, and every target — as far as it exists — resolves inside it. A target that is a
+ * link to nowhere is refused too (a write would create its target, wherever that is). Anything unreadable ⇒ false, and
+ * the reviewer decides as before.
+ */
+export function scratchOnDisk(paths, { dir = SCRATCH_DIR } = {}) {
+  try {
+    const st = lstatSync(dir)
+    if (!st.isDirectory() || (typeof process.getuid === 'function' && st.uid !== process.getuid())) return false
+    const root = realpathSync(dir)
+    for (const p of paths) {
+      for (let cur = p; ;) {
+        let real = null
+        try { real = realpathSync(cur) } catch {
+          let exists = false
+          try { lstatSync(cur); exists = true } catch { /* not there yet: its parent decides */ }
+          if (exists) return false
+        }
+        if (real !== null) { if (real !== root && !real.startsWith(root + '/')) return false; break }
+        const up = dirname(cur)
+        if (up === cur) return false
+        cur = up
+      }
+    }
+    return true
+  } catch { return false }
+}
+
+export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath, logPath, pollMs = 1000, reviewTimeoutMs = 30_000, home = homedir(), onVerdict = () => {}, log = console.error, now = Date.now, scratchCheck = scratchOnDisk }) {
   const root = String(base || '').replace(/\/+$/, '')
   const auto = new Map() // sessionID → { dir, at }
   const handled = new Map() // permission id → when it was taken up (so a poll never reviews it twice)
@@ -88,7 +117,9 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
     const msgs = Array.isArray(r.json) ? r.json : []
     let model = null
     const userMessages = []
+    const tools = new Map() // callID → tool name: which tool raised an ask (its `tool.callID`)
     for (const m of msgs) {
+      for (const p of (m && Array.isArray(m.parts) ? m.parts : [])) if (p && p.type === 'tool' && typeof p.callID === 'string' && typeof p.tool === 'string') tools.set(p.callID, p.tool)
       const info = (m && m.info) || {}
       if (info.role === 'assistant' && info.providerID && info.modelID) model = { providerID: info.providerID, modelID: info.modelID }
       if (info.role === 'user') {
@@ -96,7 +127,7 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
         if (text) userMessages.push(text)
       }
     }
-    return { model, userMessages: userMessages.slice(-MAX_USER_MESSAGES) }
+    return { model, userMessages: userMessages.slice(-MAX_USER_MESSAGES), tools }
   }
 
   /** The session's parent (null for a top-level session); undefined when OpenCode could not say — not cached. */
@@ -148,9 +179,11 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
   }
 
   async function review(req, dir, owner = req.sessionID) {
-    const { model, userMessages } = await sessionContext(owner, dir)
+    const { model, userMessages, tools } = await sessionContext(owner, dir)
     if (!model) return { verdict: null, model: '', note: 'the session has no model to review with yet' }
-    const prompt = reviewerPrompt({ req, directory: dir, userMessages })
+    // A subagent's ask names a call in ITS transcript, not the owner's: then there is no tool line, as before.
+    const tool = (req.tool && typeof req.tool.callID === 'string' && tools.get(req.tool.callID)) || ''
+    const prompt = reviewerPrompt({ req, directory: dir, userMessages, tool })
     const created = await call('POST', '/session', dir, { title: REVIEW_TITLE, permission: [{ permission: '*', pattern: '*', action: 'deny' }] })
     const rid = created.json && created.json.id
     if (!rid) return { verdict: null, model: `${model.providerID}/${model.modelID}`, note: 'could not open a review session' }
@@ -177,7 +210,9 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
 
   async function decide(req, dir, owner = req.sessionID) {
     const t0 = now()
-    const det = classifyDeterministic(req, { directory: dir, home }) || await classifySubagent(req, dir)
+    let det = classifyDeterministic(req, { directory: dir, home })
+    if (det && det.rule === 'fast:agent-scratch' && !scratchCheck(scratchPaths(req))) det = null // the disk disagrees: the reviewer's
+    det = det || await classifySubagent(req, dir)
     let stage, verdict, model = '', note = ''
     if (det) { stage = det.stage; verdict = { decision: det.decision, severity: det.stage === 'hard-deny' ? 100 : det.stage === 'fast-ask' ? 50 : 0, rule: det.rule, reason: det.reason } }
     else { stage = 'reviewer'; ({ verdict, model, note } = await review(req, dir, owner)) }

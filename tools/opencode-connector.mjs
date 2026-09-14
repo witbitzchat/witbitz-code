@@ -154,7 +154,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     let body = typeof m.b === 'string' ? m.b : undefined
     const turnOf = m.m === 'POST' && /^\/session\/([^/]+)\/message$/.exec(path)
     // PROJECT NOTES (tools/opencode-plugins/witbitz-notes.js), every turn, only where the plugin is installed: reads of ITS
-    // project's notes folder and writes into notes/ ask nothing — one note used to cost FOUR approvals (external_directory +
+    // project's notes folder and a regular model's writes into notes/ ask nothing — one note used to cost FOUR approvals (external_directory +
     // edit, for the note and its INDEX.md; measured 2026-09-14) and a model that writes notes reluctantly gave up. The
     // confidential/ folder follows the TURN's model: open for a confidential one, closed (ask) for any other, so a regular
     // model still cannot read confidential notes unasked. AGENTS.md — injected as INSTRUCTIONS — still asks for every edit.
@@ -246,10 +246,14 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     const rel = relative(plain ? '/' : resolve(root), dir)
     let model = null
     try { const b = body ? JSON.parse(body) : null; model = b && b.model && { providerID: b.model.providerID, id: b.model.modelID } } catch { /* OpenCode answers a malformed body itself */ }
-    const open = WitbitzNotes.helpers.isConfidential(model, notesConfidentialList) ? 'allow' : 'ask'
+    const confidential = WitbitzNotes.helpers.isConfidential(model, notesConfidentialList)
+    const open = confidential ? 'allow' : 'ask'
     const want = [
       { permission: 'external_directory', pattern: `${dir}/*`, action: 'allow' },
-      { permission: 'edit', pattern: `${rel}/notes/*`, action: 'allow' },
+      // A confidential turn's notes belong in confidential/ ONLY: notes/ is injected into regular models, and asked for
+      // "project notes" the owner's DeepSeek session put infra details and security gaps there. A rule `deny` is not a
+      // person's refusal — the turn goes on and the model is shown the rule, so it saves in the right folder.
+      { permission: 'edit', pattern: `${rel}/notes/*`, action: confidential ? 'deny' : 'allow' },
       { permission: 'external_directory', pattern: `${dir}/confidential/*`, action: open }, // AFTER the folder allow: last match wins
       { permission: 'edit', pattern: `${rel}/confidential/*`, action: open },
     ]

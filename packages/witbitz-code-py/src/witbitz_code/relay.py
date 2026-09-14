@@ -524,6 +524,7 @@ _ALLOW = [
         ("POST", f"/session/{_SEG}/abort"),
         ("POST", f"/session/{_SEG}/permissions/{_SEG}"),
         ("POST", f"/permission/{_SEG}/reply"),  # the same answer with a message for the model (a person's Deny)
+        ("GET", "/permission"),  # what is still waiting — a card comes back after switching sessions (the asks the stream carries)
         ("PATCH", f"/session/{_SEG}"),
         ("DELETE", f"/session/{_SEG}"),
         # New session's folder picker: the computer's home, and folder listings under it (names, never contents)

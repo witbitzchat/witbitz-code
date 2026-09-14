@@ -284,6 +284,7 @@ YES = [
     ["GET", "/session/status?directory=%2Fx"],  # which sessions are running, for the list
     ["GET", "/command?directory=%2Fx"],  # the "/" menu reads commands; running one is an ordinary message
     ["GET", "/question?directory=%2Fx"], ["POST", "/question/que_09acc14a40015iMUb0LeM04Edd/reply"], ["POST", "/question/que_1/reject"],
+    ["GET", "/permission?directory=%2Fx"],  # what is still pending — a card comes back after switching sessions
 ]
 NO = [
     ["GET", "/event"], ["POST", "/session/ses_abc/shell"], ["POST", "/session/ses_abc/command"], ["GET", "/file/content?path=%2Fetc%2Fpasswd"],
@@ -292,7 +293,7 @@ NO = [
     ["POST", "/session/ses_abc/command"], ["GET", "/command/review"],  # the command route runs !`…` from its arguments
     ["POST", "/question"], ["GET", "/question/que_1/reply"], ["POST", "/question/que_1"], ["POST", "/question/./reply"], ["POST", "/question/que_1/reply/x"],
     ["PUT", "/session/ses_abc"], ["GET", "/session/../config"], ["GET", "//agent"], ["GET", "agent"], ["DELETE", "/session"],
-    ["POST", "/session/ses_abc/permissions/per_1/extra"], ["GET", "/permission"], ["POST", "/permission"], ["GET", "/permission/per_1/reply"], ["POST", "/permission/per_1/reply/x"], ["GET", "/agent#x"], ["GET", "/agent\n"], ["GET", None], [None, "/agent"],
+    ["POST", "/session/ses_abc/permissions/per_1/extra"], ["POST", "/permission"], ["GET", "/permission/per_1"], ["GET", "/permission/per_1/reply"], ["POST", "/permission/per_1/reply/x"], ["GET", "/agent#x"], ["GET", "/agent\n"], ["GET", None], [None, "/agent"],
     ["GET", "/session/" + "a" * 129 + "/message"],
     # a segment may contain dots but never START with one: fetch/httpx collapse '.' and '..' onto an unlisted route
     ["POST", "/session/./message"], ["DELETE", "/session/."], ["GET", "/session/../message"], ["PATCH", "/session/.."],

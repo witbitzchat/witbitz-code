@@ -47,6 +47,20 @@ test('the reviewer prompt holds the policy, the request and the recent user mess
   assert.ok(p.text.indexOf('old one') < p.text.indexOf('run the tests please'), 'oldest first, the latest request last')
 })
 
+// Measured 2026-09-14: an external_directory ask for `/tmp/*` alone does not say whether the agent reads or writes, and the
+// reviewer told the person "a write" about a read. The runner now hands over the tool; the ask's own file rides along.
+test('an ask with no command names its tool and its file, so the reviewer need not guess read from write', () => {
+  const req = { id: 'per_2', sessionID: 'ses_1', permission: 'external_directory', patterns: ['/tmp/x/*'], metadata: { filepath: '/tmp/x/page-3.png', parentDir: '/tmp/x' } }
+  const p = reviewerPrompt({ req, directory: '/home/u/repo', userMessages: ['analyze the folder'], tool: 'read' })
+  assert.match(p.text, /^tool: read$/m)
+  assert.match(p.text, /^file: \/tmp\/x\/page-3\.png$/m)
+  const bare = reviewerPrompt({ req: { ...req, metadata: {} }, directory: '/home/u/repo' })
+  assert.doesNotMatch(bare.text, /^(tool|file):/m, 'nothing invented when the runner found no tool and the ask has no file')
+  const bash = reviewerPrompt({ req: { permission: 'bash', patterns: ['ls'], metadata: { command: 'ls', filepath: '/x' } }, directory: '/d', tool: 'bash' })
+  assert.doesNotMatch(bash.text, /^file:/m, 'a command speaks for itself')
+  assert.match(p.system, /\/tmp\/opencode/, 'the policy names the scratch directory, so a command writing there reads the same as the fixed rule')
+})
+
 test('the prompt is bounded: a huge command and a long history are cut', () => {
   const big = 'x'.repeat(50_000)
   const req = { id: 'per_1', sessionID: 'ses_1', permission: 'bash', patterns: [big], metadata: { command: big }, always: [] }

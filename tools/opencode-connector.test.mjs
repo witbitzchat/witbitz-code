@@ -393,10 +393,13 @@ test('NOTES: writes into the project\'s notes folder ask nothing; confidential n
   r = await rulesNow()
   assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'allow', 'a confidential model: its notes ask nothing')
   assert.equal(effective(r, 'edit', `${rel}/confidential/*`), 'allow')
+  // …and it cannot put them in notes/, which regular models read: the owner's Witbitz 1 did, when asked for "project notes"
+  assert.equal(effective(r, 'edit', `${rel}/notes/*`), 'deny', 'a confidential turn writes confidential/ only')
   await call('POST', '/session/ses_notes/message?directory=%2Fhome%2Fu%2Frepo%2Fweb', { model: PLAIN, parts: [{ type: 'text', text: 'back to a regular model' }] })
   r = await rulesNow()
   assert.equal(effective(r, 'external_directory', `/n/${key}/confidential/*`), 'ask', 'closed again for a regular model')
   assert.equal(effective(r, 'edit', `${rel}/confidential/*`), 'ask')
+  assert.equal(effective(r, 'edit', `${rel}/notes/*`), 'allow', 'and notes/ is its folder again')
   const lastConfidentialRead = r.map((x) => x.pattern).lastIndexOf(`/n/${key}/confidential/*`)
   assert.ok(lastConfidentialRead > r.map((x) => x.pattern).lastIndexOf(`/n/${key}/*`), 'the confidential rule stays AFTER the folder allow — last match wins')
 })
