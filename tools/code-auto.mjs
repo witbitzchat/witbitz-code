@@ -13,6 +13,7 @@
 // Shared vectors: tools/code-auto.vectors.json (the Python twin holds to the same file).
 import { createHash } from 'node:crypto'
 import { posix } from 'node:path'
+import { foldersCover } from '../spaces/public/codeFolders.js' // "allow this folder": what the person allowed for the session
 
 export const SEVERITY_CEILING = 70 // an "allow" this severe is shown to the person instead
 const MAX_REQUEST_CHARS = 4000
@@ -92,9 +93,21 @@ function hardDeny(shell, ctx) {
 // ── fast allow: cannot change anything ───────────────────────────────────────────────────────────────────────────────
 const READ_ONLY = new Set(['ls', 'pwd', 'cat', 'head', 'tail', 'wc', 'file', 'stat', 'du', 'df', 'which', 'whoami', 'date', 'uname', 'tree', 'grep', 'egrep', 'fgrep', 'rg', 'sort', 'uniq', 'cut', 'tr', 'jq', 'basename', 'dirname', 'realpath', 'echo', 'true', 'diff', 'cmp', 'find', 'git'])
 const GIT_READ = new Set(['status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'blame', 'describe', 'shortlog', 'grep', 'branch', 'remote', 'tag'])
-/** A word a read-only command may be given: nothing that expands ($VAR), reaches home (~) or climbs out (..), no absolute
- *  path outside the project, and nothing sensitive (a .env, a key, .git/…) — `cat ~/.aws/credentials` is not "just a read". */
-function wordStaysInProject(w, dir) {
+/** The project directory and the folders the person allowed for the session — where a path "stays in the project". */
+function projectRoots(ctx) {
+  const roots = []
+  for (const r of [ctx.directory, ...(Array.isArray(ctx.folders) ? ctx.folders : [])]) {
+    const d = posix.normalize(String(r || '')).replace(/\/+$/, '')
+    if (d && d.startsWith('/') && !roots.includes(d)) roots.push(d)
+  }
+  return roots
+}
+/** The root a normalized absolute path is inside, or ''. */
+const rootOf = (abs, roots) => roots.find((d) => abs === d || abs.startsWith(d + '/')) || ''
+/** A word a read-only command may be given: nothing that expands ($VAR) or climbs out (..), no absolute path outside the
+ *  project (or a folder the person allowed), and nothing sensitive (a .env, a key, .git/…) — `cat ~/.aws/credentials` is
+ *  not "just a read". ~ reaches home: a path spelled `~/…` counts only inside an allowed folder. */
+function wordStaysInProject(w, ctx) {
   let v = w
   if (v.startsWith('-')) {
     const eq = v.indexOf('=')
@@ -102,11 +115,16 @@ function wordStaysInProject(w, dir) {
     v = v.slice(eq + 1)
     if (!v) return true
   }
-  if (v.includes('$') || v.startsWith('~') || /(^|\/)\.\.(\/|$)/.test(v)) return false
+  if (v.includes('$') || /(^|\/)\.\.(\/|$)/.test(v)) return false
+  if (v.startsWith('~')) {
+    const home = posix.normalize(String(ctx.home || '')).replace(/\/+$/, '')
+    if (!(v === '~' || v.startsWith('~/')) || !home.startsWith('/') || !(Array.isArray(ctx.folders) && ctx.folders.length)) return false
+    v = home + v.slice(1)
+  }
   if (v.startsWith('/')) {
-    const d = posix.normalize(String(dir || '')).replace(/\/+$/, '')
     const abs = posix.normalize(v)
-    return !!d && d.startsWith('/') && (abs === d || abs.startsWith(d + '/')) && !sensitivePath(abs.slice(d.length))
+    const d = rootOf(abs, projectRoots(ctx))
+    return !!d && !sensitivePath(abs.slice(d.length))
   }
   return !sensitivePath('/' + v)
 }
@@ -122,7 +140,7 @@ function segmentReadOnly(words, ctx) {
   const { name, args, prefixed } = programOf(words)
   if (prefixed || !READ_ONLY.has(name)) return false
   if (WRITES[name] && WRITES[name](args)) return false
-  if (!args.every((a) => wordStaysInProject(a, ctx.directory))) return false
+  if (!args.every((a) => wordStaysInProject(a, ctx))) return false
   if (name === 'find') return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/.test(a))
   if (name === 'rg') return !args.some((a) => /^--pre(=|$)/.test(a) || a === '--pre-glob')
   if (name === 'git') {
@@ -166,13 +184,15 @@ function sensitivePath(abs) {
   if (/\.(pem|key|p12|pfx|jks|keystore)$/i.test(base)) return true
   return /secret|credential/i.test(base)
 }
-function editInsideProject(patterns, directory) {
-  const dir = posix.normalize(String(directory || '')).replace(/\/+$/, '')
+function editInsideProject(patterns, ctx) {
+  const dir = posix.normalize(String(ctx.directory || '')).replace(/\/+$/, '')
   if (!dir || !dir.startsWith('/') || !Array.isArray(patterns) || !patterns.length) return false
+  const roots = projectRoots(ctx)
   return patterns.every((p) => {
     if (typeof p !== 'string' || !p || /[*?[\]{}]/.test(p)) return false // a glob is not a precise target
     const abs = posix.normalize(p.startsWith('/') ? p : dir + '/' + p)
-    return abs.startsWith(dir + '/') && !sensitivePath(abs.slice(dir.length))
+    const d = roots.find((r) => abs.startsWith(r + '/')) || ''
+    return !!d && !sensitivePath(abs.slice(d.length))
   })
 }
 
@@ -221,11 +241,18 @@ export function classifyDeterministic(req, ctx = {}) {
     if (bashReadOnly(shell, ctx)) return { stage: 'fast-allow', decision: 'allow', rule: 'fast:read-only-shell', reason: 'reads only' }
     return null
   }
-  if ((req.permission === 'edit' || req.permission === 'write') && editInsideProject(req.patterns, ctx.directory)) {
+  if ((req.permission === 'edit' || req.permission === 'write') && editInsideProject(req.patterns, ctx)) {
     return { stage: 'fast-allow', decision: 'allow', rule: 'fast:edit-in-project', reason: 'an edit inside the project to an ordinary file' }
   }
   const SCRATCH = { stage: 'fast-allow', decision: 'allow', rule: 'fast:agent-scratch', reason: `the agent's own intermediate files under ${SCRATCH_DIR}` }
   if (req.permission === 'external_directory' && askInScratch(req)) return SCRATCH
+  // A folder outside the project is the PERSON's to allow — once, for the whole folder (spaces/public/codeFolders.js) —
+  // never the reviewer's guess (the owner, refused twice reading a folder it had asked for: "It should ask for permission
+  // once for the whole new project"). Inside a folder they allowed, OpenCode no longer asks; if it does, it is allowed.
+  if (req.permission === 'external_directory') {
+    if (Array.isArray(ctx.folders) && ctx.folders.length && foldersCover(req, ctx.folders)) return { stage: 'fast-allow', decision: 'allow', rule: 'fast:allowed-folder', reason: 'inside a folder the person allowed for this conversation' }
+    return { stage: 'fast-ask', decision: 'ask', rule: 'ask:new-folder', reason: 'a folder outside the project — allow it once and the whole folder is open for this conversation' }
+  }
   if ((req.permission === 'edit' || req.permission === 'write') && editInScratch(req.patterns)) return SCRATCH
   return null
 }
@@ -242,7 +269,8 @@ SOFT DENY — deny unless the person's recent messages clearly ask for exactly t
 network uploads or downloads the task does not need; piping a download into a shell (curl … | sh); deleting anything
 outside build, cache or generated directories; git push (above all --force) and history rewrites of shared branches;
 deploy, publish or release commands; reading, printing or moving credentials, tokens, keys or secret stores; changing
-system configuration; sudo; any other path outside the project directory; long-running servers exposed beyond localhost.
+system configuration; sudo; any other path outside the project directory (folders in allowed_folders ARE part of the
+project: the person allowed them for this conversation); long-running servers exposed beyond localhost.
 
 HARD DENY — always deny: sending code, secrets or environment variables to an outside destination (exfiltration);
 destroying the home directory or the filesystem; disabling security controls.
@@ -261,7 +289,7 @@ const cut = (s, n) => { const t = String(s == null ? '' : s); return t.length > 
 
 /** `tool`: the tool that raised the ask (read, edit, bash…), when the runner found it in the transcript — an
  *  external_directory ask alone does not say whether it reads or writes. */
-export function reviewerPrompt({ req, directory, userMessages = [], tool = '' }) {
+export function reviewerPrompt({ req, directory, userMessages = [], tool = '', folders = [] }) {
   const r = req || {}
   const command = r.metadata && typeof r.metadata.command === 'string' ? r.metadata.command : ''
   const file = !command && r.metadata && typeof r.metadata.filepath === 'string' ? r.metadata.filepath : ''
@@ -273,6 +301,7 @@ export function reviewerPrompt({ req, directory, userMessages = [], tool = '' })
     ...(typeof tool === 'string' && tool ? [`tool: ${cut(tool, 64)}`] : []),
     ...(file ? [`file: ${cut(file, 1024)}`] : []),
     `project_directory: ${cut(directory, 512)}`,
+    ...(Array.isArray(folders) && folders.length ? [`allowed_folders: ${cut(folders.join(', '), 1024)}`] : []),
     '</request>',
     '<recent_user_messages oldest_first="true">',
     ...msgs.map((m, i) => `[${i + 1}] ${cut(m, MAX_MESSAGE_CHARS)}`),

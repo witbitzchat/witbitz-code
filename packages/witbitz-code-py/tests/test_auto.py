@@ -40,10 +40,10 @@ DIR = "/home/u/repo"
 @pytest.mark.parametrize("case", VECTORS["cases"], ids=lambda c: c["name"])
 def test_vector_case(case):
     r = classify_deterministic({"id": "per_x", "sessionID": "ses_x", "always": [], **case["req"]},
-                               directory=VECTORS["directory"], home=VECTORS["home"])
+                               directory=VECTORS["directory"], home=VECTORS["home"], folders=case.get("folders", []))
     assert (r["stage"] if r else "review") == case["stage"]
     if r:
-        assert r["decision"] == ("deny" if r["stage"] == "hard-deny" else "allow")
+        assert r["decision"] == {"hard-deny": "deny", "fast-ask": "ask"}.get(r["stage"], "allow")
         assert r["rule"], "every automatic decision names its rule"
     if r and r["stage"] == "hard-deny":
         assert len(r["reason"]) > 10, "a refusal tells the agent why"
@@ -91,6 +91,7 @@ PARITY_JS = """
   const ctx = { directory: INPUT.directory, home: INPUT.home }
   OUT({
     classify: INPUT.reqs.map((r) => classifyDeterministic(r, ctx)),
+    classifyFolders: INPUT.folderReqs.map(([r, folders]) => classifyDeterministic(r, { ...ctx, folders })),
     verdicts: INPUT.texts.map((t) => { const v = parseVerdict(t); return [v, actionFor(v)] }),
     prompts: INPUT.prompts.map((p) => reviewerPrompt(p)),
     logs: INPUT.reqs.slice(0, 200).map((req) => logRecord({ req, stage: 'reviewer', verdict: { severity: 5, rule: 'r' }, action: 'ask', model: 'm', ms: 1, at: 7 })),
@@ -122,8 +123,24 @@ def _parity_inputs() -> dict:
                 "userMessages": [rnd.choice(["run the tests", "  ", "x" * 2000, "😀" * 900, 7, None]) for _ in range(rnd.randint(0, 9))],
                 "tool": rnd.choice(["read", "edit", "", None, 7, "t" * 100, "😀" * 40])}
                for i in range(0, len(reqs), 25)]
+    # allowed folders ("allow this folder"): the same requests judged with folders the person allowed, ~ spelled or not
+    folder_sets = [[], ["/home/u/pub"], ["/home/u/pub", "/tmp/x"], ["/home/u/pub/"], ["/home/u"], ["relative"], ["/"], [7, None]]
+    pub = ["/home/u/pub/a", "~/pub/a", "~/pub", "~", "~x/pub", "../pub/a", "/home/u/pubx/a", "/home/u/pub/.env", "~/pub/../../etc", "/tmp/x/y"]
+    folder_reqs = []
+    for _ in range(1500):
+        folders = rnd.choice(folder_sets)
+        kind = rnd.random()
+        if kind < 0.5:
+            cmd = " ".join(rnd.choice(TOKENS[:12] + pub) for _ in range(rnd.randint(1, 5)))
+            req = {"permission": "bash", "patterns": [cmd[:20]], "metadata": {"command": cmd}}
+        elif kind < 0.8:
+            req = {"permission": rnd.choice(["edit", "write"]), "patterns": rnd.sample(pub + PATHS[:6], rnd.randint(1, 3)), "metadata": {}}
+        else:
+            req = {"permission": "external_directory", "patterns": [p + "/*" for p in rnd.sample(pub, rnd.randint(0, 2))], "metadata": {}}
+        folder_reqs.append([req, folders])
+    prompts += [{"req": folder_reqs[i][0], "directory": DIR, "userMessages": ["sync the pub repo"], "folders": folder_reqs[i][1]} for i in range(0, 200, 10)]
     paths = PATHS + [rnd.choice(["/", ""]) + "/".join(rnd.choice(["a", "..", ".", "", "b"]) for _ in range(rnd.randint(0, 6))) for _ in range(500)]
-    return {"directory": DIR, "home": "/home/u", "reqs": reqs, "texts": texts, "prompts": prompts, "paths": paths}
+    return {"directory": DIR, "home": "/home/u", "reqs": reqs, "texts": texts, "prompts": prompts, "paths": paths, "folderReqs": folder_reqs}
 
 
 @requires_node
@@ -133,13 +150,16 @@ def test_parity_with_the_js_module_on_generated_inputs():
     py_classify = [classify_deterministic(r, directory=data["directory"], home=data["home"]) for r in data["reqs"]]
     for req, a, b in zip(data["reqs"], py_classify, js["classify"]):
         assert a == b, f"classify differs for {req!r}: python {a!r} vs js {b!r}"
+    for (req, folders), b in zip(data["folderReqs"], js["classifyFolders"]):
+        a = classify_deterministic(req, directory=data["directory"], home=data["home"], folders=folders)
+        assert a == b, f"classify with folders {folders!r} differs for {req!r}: python {a!r} vs js {b!r}"
     decided = sum(1 for x in py_classify if x)
     assert decided > 400 and len(py_classify) - decided > 400, "the generator reaches both outcomes"
     for text, (v, act) in zip(data["texts"], js["verdicts"]):
         pv = parse_verdict(text)
         assert [pv, action_for(pv)] == [v, act], f"verdict differs for {text!r}"
     for p, jp in zip(data["prompts"], js["prompts"]):
-        assert reviewer_prompt(p["req"], p["directory"], p["userMessages"], p["tool"]) == jp
+        assert reviewer_prompt(p["req"], p["directory"], p["userMessages"], p.get("tool", ""), p.get("folders")) == jp
     for req, jl in zip(data["reqs"], js["logs"]):
         assert log_record(req=req, stage="reviewer", verdict={"severity": 5, "rule": "r"}, action="ask", model="m", ms=1, at=7) == jl
     assert [posix_normalize(p) for p in data["paths"]] == js["normalize"]
@@ -579,7 +599,7 @@ def test_wiring_the_page_switches_auto_and_the_verdict_comes_back(make, tmp_path
             client = PyClient(rig.secret, rig.relay.url)
             try:
                 await client.start()
-                assert client.hellos()[-1]["caps"] == ["auto", "attachments", "outputs", "tools", "seen"]
+                assert client.hellos()[-1]["caps"] == ["auto", "attachments", "outputs", "tools", "seen", "asks", "folders"]
                 # a stale nonce cannot switch it: a recording cannot turn Auto on
                 await client.peer.send({"t": "auto", "k": "not-the-nonce", "sid": "ses_main", "dir": DIR, "on": True})
                 await asyncio.sleep(0.3)

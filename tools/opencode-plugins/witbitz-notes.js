@@ -176,10 +176,15 @@ const CORRECTION = [
   /\bactually\b/i,
   /(לא נכון|טעות|טעית|שכחת|פספסת|לא מעודכן|צריך להיות|במקום|תמיד|אף פעם|מעכשיו|בפעם הבאה|תזכור|זה לא)/,
 ]
-/** Does the person's message read as a correction or a rule to keep? */
-function looksLikeCorrection(text) {
+// A session's FIRST message is a task ("The cart total is wrong … find the cause") — it corrects nobody. There only a rule
+// stated for the future counts (narration eval, 2026-09-15: a bug report was taken for a correction, and the agent told the
+// person it was saving a note).
+const STANDING_RULE = /\b(from now on|in future|in the future|every time|remember that|keep in mind)\b|(מעכשיו|בפעם הבאה|תזכור|מהיום)/i
+/** Does the person's message read as a correction or a rule to keep? `first`: the session's first message. */
+function looksLikeCorrection(text, { first = false } = {}) {
   const t = String(text || '')
-  return !!t.trim() && CORRECTION.some((re) => re.test(t))
+  if (!t.trim()) return false
+  return first ? STANDING_RULE.test(t) : CORRECTION.some((re) => re.test(t))
 }
 
 const lineCount = (text) => text.trim().split('\n').length
@@ -231,6 +236,7 @@ function buildInjection({ paths, agents = '', index = '', subagent = false, corr
     'Check: did the person correct you or confirm an approach, tell you something about themselves, decide something with you, or did you run into a trap that cost real effort and that the code does not show? If so, your LAST step before the final answer is to save it as a note, as above. If not, save nothing and end your answer with "Notes: nothing new."',
     'A message saying you missed something, got something wrong or should do it differently is a correction: save what you should have known as a feedback note, after you fix it — even if you decided earlier in this session that nothing was worth a note.',
     'Do this check on every turn, also a short one that only makes a quick fix. "Notes: nothing new." goes in your answer only, never inside a note.',
+    'Keep this bookkeeping out of what you tell the person: never mention checking or saving notes in your progress updates or answer — only the closing "Notes: nothing new." line.',
     'Use the write and edit tools — the folder already exists, so no shell commands.')
   return out.join('\n')
 }
@@ -295,14 +301,16 @@ export const WitbitzNotes = async (ctx = {}) => {
   }
   // The person's last message, when it reads as a correction — per session, until a note is written or they say something else.
   const corrections = new Map()
+  const spoken = new Set() // sessions that have had a message since OpenCode started — the next one is not their first
   return {
     'chat.message': async (input, output) => {
       try {
         const sid = input && input.sessionID
         if (!sid) return
         const text = ((output && output.parts) || []).filter((p) => p && p.type === 'text' && !p.synthetic).map((p) => p.text || '').join('\n')
-        if (looksLikeCorrection(text)) corrections.set(sid, text)
+        if (looksLikeCorrection(text, { first: !spoken.has(sid) })) corrections.set(sid, text)
         else corrections.delete(sid)
+        spoken.add(sid)
       } catch { /* a notes problem never costs a turn */ }
     },
     'tool.execute.after': async (input) => {

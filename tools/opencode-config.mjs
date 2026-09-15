@@ -96,6 +96,13 @@ export function installNotes({ configDir = CONFIG_DIR } = {}) {
   rmSync(join(configDir, 'witbitz-confidential-models.json'), { force: true })
 }
 
+/** Put the progress plugin (tools/opencode-plugins/witbitz-progress.js) where OpenCode loads it: the agent's updates for the
+ *  person, drawn in the Code section's transcript between its work rows. */
+export function installProgress({ configDir = CONFIG_DIR } = {}) {
+  mkdirSync(join(configDir, 'plugins'), { recursive: true })
+  copyFileSync(join(HERE, 'opencode-plugins', 'witbitz-progress.js'), join(configDir, 'plugins', 'witbitz-progress.js'))
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const pp = process.argv.indexOf('--proxy-port')
   const proxyPort = pp >= 0 ? Number(process.argv[pp + 1]) || 0 : 0
@@ -105,7 +112,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (existsSync(OUT)) { copyFileSync(OUT, OUT + '.bak'); console.log(`kept ${OUT}.bak`) }
   writeFileSync(OUT, json + '\n')
   installNotes()
+  installProgress()
   console.log(`installed project notes: ${join(CONFIG_DIR, 'plugins', 'witbitz-notes.js')} + /notes-init (notes in ${NOTES_ROOT})`)
+  console.log(`installed progress updates: ${join(CONFIG_DIR, 'plugins', 'witbitz-progress.js')}`)
   console.log(`wrote ${OUT} — ${Object.keys(buildConfig({ proxyPort }).provider.trustedrouter.models).length} models${proxyPort ? `, TrustedRouter via the confidential-model proxy on 127.0.0.1:${proxyPort}` : ''}`)
   console.log('restart the server for it to take effect: it reads this file once, at boot')
 }

@@ -79,6 +79,37 @@ test('relay: opening onto a running computer goes connecting → online, never t
   }
 })
 
+// The owner, switching back to Spaces from another app: "I get this transient red notice which should not be there". iOS
+// froze the page with its socket "open"; on return the computer's last hello was a minute old, and the first tick said
+// offline before anyone had asked the computer again.
+test('relay: back from the background, a stale hello is not "offline" — the page asks again and is online, never offline', async (t) => {
+  const { relay, pairing } = await rig(t)
+  let skew = 0
+  const tr = relayTransport({ computer: { id: 'cmp1', name: 'desk', relay: relay.url(), secret: pairing.secret }, now: () => Date.now() + skew })
+  t.after(() => tr.close())
+  assert.ok(await until(() => tr.status() === 'online'), `online: ${tr.status()}`)
+  const seen = []
+  tr.onChange((s) => seen.push(s))
+  skew = 70_000 // the page was frozen for 70 s: no tick ran, no hello was heard
+  assert.notEqual(tr.status(), 'offline', 'the moment it wakes, before anything is asked')
+  tr.kick() // what the page does when it becomes visible
+  assert.notEqual(tr.status(), 'offline')
+  assert.ok(await until(() => tr.status() === 'online'), `online again: ${tr.status()}`)
+  assert.ok(!seen.includes('offline'), `never said offline — ${JSON.stringify(seen)}`)
+})
+
+test('relay: back from the background with the computer really gone, it still says offline — after asking', async (t) => {
+  const { relay, pairing, stopComputer } = await rig(t)
+  let skew = 0
+  const tr = relayTransport({ computer: { id: 'cmp1', name: 'desk', relay: relay.url(), secret: pairing.secret }, now: () => Date.now() + skew })
+  t.after(() => tr.close())
+  assert.ok(await until(() => tr.status() === 'online'))
+  stopComputer()
+  skew = 70_000
+  tr.kick()
+  assert.ok(await until(() => tr.status() === 'offline', 12_000), `offline: ${tr.status()}`)
+})
+
 test('relay: the computer going away reads as offline, a request then fails fast; it comes back online by itself', async (t) => {
   const { tr, stopComputer, startComputer } = await rig(t)
   assert.ok(await until(() => tr.status() === 'online'))
@@ -86,10 +117,10 @@ test('relay: the computer going away reads as offline, a request then fails fast
   tr.onChange((s) => seen.push(s))
   stopComputer()
   assert.ok(await until(() => tr.status() === 'offline'), `went offline: ${tr.status()}`)
-  const t0 = Date.now()
+  const t0 = performance.now() // not Date.now(): this box's wall clock was measured running 25% fast (10 s in 8)
   const r = await tr.request('GET', '/agent')
   assert.equal(r.ok, false); assert.equal(r.text, 'offline')
-  assert.ok(Date.now() - t0 < 9000, 'it waited only the short online grace, not the request timeout')
+  assert.ok(performance.now() - t0 < 9000, 'it waited only the short online grace, not the request timeout')
   await startComputer()
   assert.ok(await until(() => tr.status() === 'online'), 'back online without a reload')
   assert.ok(seen.includes('offline') && seen.at(-1) === 'online', JSON.stringify(seen))

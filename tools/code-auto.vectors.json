@@ -1,5 +1,5 @@
 {
-  "_about": "Shared cases for Code Auto mode (docs/code-auto-mode.md). tools/code-auto.test.mjs runs them against tools/code-auto.mjs; the Python twin must give the same answers. stage: hard-deny | fast-allow | review (the model decides).",
+  "_about": "Shared cases for Code Auto mode (docs/code-auto-mode.md). tools/code-auto.test.mjs runs them against tools/code-auto.mjs; the Python twin must give the same answers. stage: hard-deny | fast-allow | fast-ask (the person's card) | review (the model decides). folders: the folders the person allowed for the session (spaces/public/codeFolders.js).",
   "directory": "/home/u/repo",
   "home": "/home/u",
   "cases": [
@@ -464,7 +464,7 @@
       "stage": "review"
     },
     {
-      "name": "outside the project always goes to review",
+      "name": "outside the project is the person's to allow, not the reviewer's",
       "req": {
         "permission": "external_directory",
         "patterns": [
@@ -472,7 +472,7 @@
         ],
         "metadata": {}
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "web fetch goes to review",
@@ -863,7 +863,7 @@
       "stage": "fast-allow"
     },
     {
-      "name": "the rest of /tmp is the reviewer's",
+      "name": "the rest of /tmp is the person's to allow",
       "req": {
         "permission": "external_directory",
         "patterns": [
@@ -874,7 +874,7 @@
           "parentDir": "/tmp"
         }
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "a look-alike of the scratch directory",
@@ -888,7 +888,7 @@
           "parentDir": "/tmp/opencodex"
         }
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "climbing out of the scratch directory",
@@ -902,7 +902,7 @@
           "parentDir": "/tmp/opencode/../../home/u"
         }
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "the pattern is scratch but the file is not",
@@ -916,7 +916,7 @@
           "parentDir": "/tmp/opencode"
         }
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "a key parked in the scratch directory",
@@ -930,7 +930,7 @@
           "parentDir": "/tmp/opencode"
         }
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "a .ssh folder inside the scratch directory",
@@ -944,7 +944,7 @@
           "parentDir": "/tmp/opencode/.ssh"
         }
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "no targets at all",
@@ -953,7 +953,7 @@
         "patterns": [],
         "metadata": {}
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "a relative file under a scratch pattern",
@@ -966,7 +966,7 @@
           "filepath": "a.png"
         }
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "another outside directory",
@@ -980,7 +980,7 @@
           "parentDir": "/home/u/other"
         }
       },
-      "stage": "review"
+      "stage": "fast-ask"
     },
     {
       "name": "writing a note into the scratch directory",
@@ -1012,6 +1012,195 @@
           "/tmp/opencode/credentials.json"
         ],
         "metadata": {}
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a folder outside the project the person has not allowed: theirs, once — never the reviewer's guess",
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/home/u/witbitz-code-pub/*"
+        ],
+        "metadata": {
+          "filepath": "/home/u/witbitz-code-pub/README.md",
+          "parentDir": "/home/u/witbitz-code-pub"
+        }
+      },
+      "stage": "fast-ask"
+    },
+    {
+      "name": "inside a folder the person allowed: allowed",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/home/u/witbitz-code-pub/tools/*"
+        ],
+        "metadata": {
+          "filepath": "/home/u/witbitz-code-pub/tools/a.mjs",
+          "parentDir": "/home/u/witbitz-code-pub/tools"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "a look-alike of an allowed folder is still new",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "external_directory",
+        "patterns": [
+          "/home/u/witbitz-code-pubx/*"
+        ]
+      },
+      "stage": "fast-ask"
+    },
+    {
+      "name": "reading a file in an allowed folder by its absolute path",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "cat /home/u/witbitz-code-pub/README.md"
+        ],
+        "metadata": {
+          "command": "cat /home/u/witbitz-code-pub/README.md"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "the same read spelled with ~",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "cat ~/witbitz-code-pub/README.md"
+        ],
+        "metadata": {
+          "command": "cat ~/witbitz-code-pub/README.md && git -C ~/witbitz-code-pub status"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "~ reads in an allowed folder",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "ls ~/witbitz-code-pub/tools"
+        ],
+        "metadata": {
+          "command": "ls ~/witbitz-code-pub/tools | head"
+        }
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "~ outside the allowed folder is not a plain read",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "cat ~/notes.txt"
+        ],
+        "metadata": {
+          "command": "cat ~/notes.txt"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "a key inside an allowed folder is not a plain read",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "cat /home/u/witbitz-code-pub/.env"
+        ],
+        "metadata": {
+          "command": "cat /home/u/witbitz-code-pub/.env"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "without allowed folders, ~ never counts as the project",
+      "req": {
+        "permission": "bash",
+        "patterns": [
+          "ls ~/repo"
+        ],
+        "metadata": {
+          "command": "ls ~/repo"
+        }
+      },
+      "stage": "review"
+    },
+    {
+      "name": "an edit in an allowed folder (OpenCode's worktree-relative pattern)",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "../witbitz-code-pub/README.md"
+        ]
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "an edit in an allowed folder by absolute path",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "/home/u/witbitz-code-pub/docs/a.md"
+        ]
+      },
+      "stage": "fast-allow"
+    },
+    {
+      "name": "an edit to a secret in an allowed folder",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "../witbitz-code-pub/.env"
+        ]
+      },
+      "stage": "review"
+    },
+    {
+      "name": "an edit outside any allowed folder",
+      "folders": [
+        "/home/u/witbitz-code-pub"
+      ],
+      "req": {
+        "permission": "edit",
+        "patterns": [
+          "../other/README.md"
+        ]
       },
       "stage": "review"
     }

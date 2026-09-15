@@ -65,6 +65,8 @@ const REQUEST_TIMEOUT_MS = 35_000 // the connector's own timeout is 30 s
 const RESUB_MS = 30_000 // the connector drops a subscription nobody renewed for 75 s
 const GIVE_UP_MS = 60_000
 const SILENT_MS = 50_000 // an "open" socket with a computer on it but no hello for this long is a dead path: redial
+const WAKE_GAP_MS = 15_000 // the 5-second tick went this long without running: the page was frozen in the background
+const WAKE_WAIT_MS = 4_000 // back from the background: how long the computer has to answer before "offline" may show
 
 export function relayTransport({ computer, WebSocketImpl, now = () => Date.now() }) {
   const listeners = new Set()
@@ -92,9 +94,16 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
   // The relay says who is on the channel only just AFTER the socket opens. Counting the page alone before then said
   // "offline" for a moment on every open (the owner: "I get this brief red warning. It is transient and shouldnt show up").
   let peersKnown = false
+  // ★ BACK FROM THE BACKGROUND. iOS freezes the page with its socket still "open"; on return the computer's last hello is
+  //   old because nothing ran, not because the computer left — and the first tick said offline before anyone had asked it
+  //   again (the owner: "When I switch apps and return to spaces I get this transient red notice"). A frozen tick, or the
+  //   page saying it is visible again (kick), asks the computer and holds "offline" back until it has had time to answer.
+  let lastTick = now()
+  let wokeAt = -Infinity
   const status = () => {
     if (!peer.isOpen) return 'connecting' // still dialling the relay (or retrying)
     if (peer.peers >= 2 && now() - lastHello < HELLO_FRESH_MS) return 'online'
+    if (now() - lastTick > WAKE_GAP_MS || now() - wokeAt < WAKE_WAIT_MS) return 'connecting' // just back: asking again
     if (peer.peers < 2) return !peersKnown && now() - openedAt < PEERS_WAIT_MS ? 'connecting' : 'offline' // alone on the channel: the computer is not running
     // Someone else is here but has not said hello — maybe the computer is just answering, maybe it is only another of
     // your devices. Give it a moment, then call it offline.
@@ -163,8 +172,17 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
     },
   })
   const resubscribe = () => { if (nonce) for (const p of subs.keys()) peer.send({ t: 'sub', c: cid, k: nonce, p }) }
+  const wake = () => {
+    lastTick = now()
+    wokeAt = now()
+    if (peer.isOpen) peer.send({ t: 'ping' }) // the connector answers a ping with its hello
+    setTimeout(changed, WAKE_WAIT_MS + 50)
+    changed()
+  }
   peer.start()
   freshTimer = setInterval(() => {
+    if (now() - lastTick > WAKE_GAP_MS) wake() // the page was frozen: this tick is the first thing to run
+    lastTick = now()
     // ★ A dead network path can leave a socket "open" forever (send() never fails). The connector says hello every 20 s
     //   while anyone is here, so silence for 50 s with a peer present means the path is gone: redial.
     if (peer.isOpen && peer.peers >= 2 && lastHello && now() - lastHello > SILENT_MS) peer.reconnect()
@@ -205,7 +223,7 @@ export function relayTransport({ computer, WebSocketImpl, now = () => Date.now()
         peer.send({ t: 'tools', k: nonce })
       })
     },
-    kick: () => peer.kick(),
+    kick: () => { wake(); peer.kick() }, // the page is visible again: ask the computer, and redial a dead socket
     close() {
       clearInterval(resubTimer); clearInterval(freshTimer); clearTimeout(giveUpTimer)
       for (const e of pending.values()) { clearTimeout(e.timer); e.resolve({ ok: false, status: 0, json: null, text: 'closed' }) }

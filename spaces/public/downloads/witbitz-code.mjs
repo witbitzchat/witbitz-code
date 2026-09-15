@@ -179,9 +179,9 @@ function Uint8ArrayToHex(data) {
   }
   return hexString;
 }
-function stringToUint8Array(str) {
+function stringToUint8Array(str2) {
   const encoder = new TextEncoder();
-  return encoder.encode(str);
+  return encoder.encode(str2);
 }
 function Uint8ArrayToString(uint8Array) {
   const decoder = new TextDecoder("utf-8");
@@ -194,8 +194,8 @@ function readBigInt64BE(uint8Array, offset) {
   const hex2 = Uint8ArrayToHex(uint8Array.slice(offset, offset + 8));
   return BigInt(`0x${hex2}`);
 }
-function base64Decode(str) {
-  return Uint8ArrayToString(base64ToUint8Array(str));
+function base64Decode(str2) {
+  return Uint8ArrayToString(base64ToUint8Array(str2));
 }
 function uint8ArrayEqual(a, b) {
   if (a.byteLength !== b.byteLength) {
@@ -708,10 +708,10 @@ function hexToBytes(hex2) {
   }
   return array;
 }
-function utf8ToBytes(str) {
-  if (typeof str !== "string")
+function utf8ToBytes(str2) {
+  if (typeof str2 !== "string")
     throw new Error("string expected");
-  return new Uint8Array(new TextEncoder().encode(str));
+  return new Uint8Array(new TextEncoder().encode(str2));
 }
 function toBytes2(data) {
   if (typeof data === "string")
@@ -2265,7 +2265,7 @@ function _normFnElement(Fn2, key) {
     let bytes = ensureBytes("private key", key);
     try {
       num2 = Fn2.fromBytes(bytes);
-    } catch (error) {
+    } catch (error2) {
       throw new Error(`invalid private key: expected ui8a of size ${expected}, got ${typeof key}`);
     }
   }
@@ -2738,7 +2738,7 @@ function ecdh(Point, ecdhOpts = {}) {
   function isValidSecretKey(secretKey) {
     try {
       return !!_normFnElement(Fn2, secretKey);
-    } catch (error) {
+    } catch (error2) {
       return false;
     }
   }
@@ -2751,7 +2751,7 @@ function ecdh(Point, ecdhOpts = {}) {
       if (isCompressed === false && l !== publicKeyUncompressed)
         return false;
       return !!Point.fromBytes(publicKey);
-    } catch (error) {
+    } catch (error2) {
       return false;
     }
   }
@@ -3015,7 +3015,7 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
       if (!sig) {
         try {
           sig = Signature.fromBytes(ensureBytes("sig", sg), "compact");
-        } catch (error) {
+        } catch (error2) {
           return false;
         }
       }
@@ -3661,7 +3661,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
       A = Point.fromBytes(publicKey, zip215);
       R = Point.fromBytes(r, zip215);
       SB = BASE.multiplyUnsafe(s);
-    } catch (error) {
+    } catch (error2) {
       return false;
     }
     if (!zip215 && A.isSmallOrder())
@@ -3690,7 +3690,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
   function isValidPublicKey(key, zip215) {
     try {
       return !!Point.fromBytes(key, zip215);
-    } catch (error) {
+    } catch (error2) {
       return false;
     }
   }
@@ -5761,8 +5761,8 @@ function parseCanonicalBody(entry) {
       throw new Error("Invalid Rekor entry structure");
     }
     return rekorEntry;
-  } catch (error) {
-    throw new Error(`Failed to parse canonicalized body: ${error instanceof Error ? error.message : String(error)}`);
+  } catch (error2) {
+    throw new Error(`Failed to parse canonicalized body: ${error2 instanceof Error ? error2.message : String(error2)}`);
   }
 }
 var init_body = __esm({
@@ -6384,8 +6384,8 @@ var init_tuf = __esm({
           const metadata = JSON.parse(file);
           this.validateMetadata(metadata);
           return metadata;
-        } catch (error) {
-          throw new Error(`Failed to load the JSON file:  ${error}`);
+        } catch (error2) {
+          throw new Error(`Failed to load the JSON file:  ${error2}`);
         }
       }
       async verifyHashes(data, hashes, context) {
@@ -6410,35 +6410,35 @@ var init_tuf = __esm({
       // This function supports ECDSA (256, 385, 521), Ed25519 in Hex or PEM format
       // it is possible to support certain cases of RSA, but it is not really useful for now
       // Returns a mapping keyid (hexstring) -> CryptoKey object
-      async loadRoot(json, oldroot) {
-        if (json.signed._type !== Roles.Root) {
+      async loadRoot(json2, oldroot) {
+        if (json2.signed._type !== Roles.Root) {
           throw new Error("Loading the wrong metafile as root.");
         }
         let keys;
         let threshold;
         let roleKeys;
         if (oldroot == void 0) {
-          keys = await loadKeys(json.signed.keys);
-          roleKeys = json.signed.roles.root.keyids;
-          threshold = json.signed.roles.root.threshold;
+          keys = await loadKeys(json2.signed.keys);
+          roleKeys = json2.signed.roles.root.keyids;
+          threshold = json2.signed.roles.root.threshold;
         } else {
           keys = oldroot.keys;
           roleKeys = oldroot.roles["root"].keyids;
           threshold = oldroot.threshold;
         }
-        if (await checkSignatures(keys, roleKeys, json.signed, json.signatures, threshold) !== true) {
+        if (await checkSignatures(keys, roleKeys, json2.signed, json2.signatures, threshold) !== true) {
           throw new Error("Failed to verify metafile.");
         }
-        keys = await loadKeys(json.signed.keys);
-        if (!Number.isSafeInteger(json.signed.version) || json.signed.version < 1) {
+        keys = await loadKeys(json2.signed.keys);
+        if (!Number.isSafeInteger(json2.signed.version) || json2.signed.version < 1) {
           throw new Error("There is something wrong with the root version number.");
         }
         for (const role of TOP_LEVEL_ROLE_NAMES) {
-          if (!json.signed.roles[role]) {
+          if (!json2.signed.roles[role]) {
             throw new Error(`Missing required top-level role: ${role}`);
           }
         }
-        for (const [roleName, role] of Object.entries(json.signed.roles)) {
+        for (const [roleName, role] of Object.entries(json2.signed.roles)) {
           const keyidSet = new Set(role.keyids);
           if (keyidSet.size !== role.keyids.length) {
             throw new Error(`Duplicate key IDs found in role: ${roleName}`);
@@ -6446,11 +6446,11 @@ var init_tuf = __esm({
         }
         return {
           keys,
-          version: json.signed.version,
-          expires: new Date(json.signed.expires),
-          threshold: json.signed.roles.root.threshold,
-          consistent_snapshot: json.signed.consistent_snapshot,
-          roles: json.signed.roles
+          version: json2.signed.version,
+          expires: new Date(json2.signed.expires),
+          threshold: json2.signed.roles.root.threshold,
+          consistent_snapshot: json2.signed.consistent_snapshot,
+          roles: json2.signed.roles
         };
       }
       async updateRoot(frozenTimestamp) {
@@ -6732,8 +6732,8 @@ var init_tuf2 = __esm({
           const { TUFClient: TUFClient2 } = await Promise.resolve().then(() => (init_tuf(), tuf_exports));
           const rootMetadata = this.initialRoot || await this.getDefaultRoot();
           this.tufClient = new TUFClient2(this.metadataUrl, rootMetadata, this.namespace, this.targetBaseUrl, { disableCache: this.disableCache });
-        } catch (error) {
-          throw new Error(`Failed to initialize TUF client: ${error instanceof Error ? error.message : String(error)}`);
+        } catch (error2) {
+          throw new Error(`Failed to initialize TUF client: ${error2 instanceof Error ? error2.message : String(error2)}`);
         }
       }
       /**
@@ -6779,8 +6779,8 @@ var init_tuf2 = __esm({
           this.cachedRoot = trustedRoot;
           this.cacheTimestamp = Date.now();
           return trustedRoot;
-        } catch (error) {
-          throw new Error(`Failed to fetch trusted root via TUF: ${error instanceof Error ? error.message : String(error)}`);
+        } catch (error2) {
+          throw new Error(`Failed to fetch trusted root via TUF: ${error2 instanceof Error ? error2.message : String(error2)}`);
         }
       }
       /**
@@ -9406,8 +9406,8 @@ var base64EncodeOutputStream = function() {
   };
   return _this;
 };
-var base64DecodeInputStream = function(str) {
-  const _str = str;
+var base64DecodeInputStream = function(str2) {
+  const _str = str2;
   let _pos = 0;
   let _buffer = 0;
   let _buflen = 0;
@@ -9838,8 +9838,8 @@ function b64u(bytes) {
   for (let i = 0; i < b.length; i += 32768) s += String.fromCharCode.apply(null, b.subarray(i, i + 32768));
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
-function unb64u(str) {
-  const s = String(str).replace(/-/g, "+").replace(/_/g, "/");
+function unb64u(str2) {
+  const s = String(str2).replace(/-/g, "+").replace(/_/g, "/");
   const bin = atob(s + "=".repeat((4 - s.length % 4) % 4));
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -10606,9 +10606,9 @@ if (false) {
 }
 
 // tools/opencode-connector.mjs
-import { readFileSync as readFileSync7, existsSync as existsSync6, mkdirSync as mkdirSync5, appendFileSync as appendFileSync2, writeFileSync as writeFileSync6, renameSync as renameSync5 } from "node:fs";
+import { readFileSync as readFileSync7, existsSync as existsSync7, mkdirSync as mkdirSync6, appendFileSync as appendFileSync2, writeFileSync as writeFileSync6, renameSync as renameSync5 } from "node:fs";
 import { createHash as createHash8 } from "node:crypto";
-import { homedir as homedir8, hostname as hostname2 } from "node:os";
+import { homedir as homedir9, hostname as hostname2 } from "node:os";
 import { join as join6, resolve as resolve3, relative } from "node:path";
 
 // tools/code-confidential.mjs
@@ -12240,8 +12240,8 @@ async function verifyCertificate(certPem, expectedDomain, attestationDoc, expect
   let cert;
   try {
     cert = X509Certificate.parse(certPem);
-  } catch (error) {
-    throw new AttestationError(`Failed to parse enclave TLS certificate: ${error.message}`, { cause: error });
+  } catch (error2) {
+    throw new AttestationError(`Failed to parse enclave TLS certificate: ${error2.message}`, { cause: error2 });
   }
   const sans = extractSANs(cert);
   if (sans.length === 0) {
@@ -12257,8 +12257,8 @@ async function verifyCertificate(certPem, expectedDomain, attestationDoc, expect
   let hpkeKeyBytes;
   try {
     hpkeKeyBytes = decodeDomains(hpkeSans, "hpke");
-  } catch (error) {
-    throw new AttestationError(`Failed to extract HPKE key from certificate: ${error.message}`, { cause: error });
+  } catch (error2) {
+    throw new AttestationError(`Failed to extract HPKE key from certificate: ${error2.message}`, { cause: error2 });
   }
   const hpkePublicKey = bytesToHex3(hpkeKeyBytes);
   if (hpkePublicKey !== expectedHpkeKey) {
@@ -12271,8 +12271,8 @@ async function verifyCertificate(certPem, expectedDomain, attestationDoc, expect
   let hashBytes;
   try {
     hashBytes = decodeDomains(hattSans, "hatt");
-  } catch (error) {
-    throw new AttestationError(`Failed to extract attestation hash from certificate: ${error.message}`, { cause: error });
+  } catch (error2) {
+    throw new AttestationError(`Failed to extract attestation hash from certificate: ${error2.message}`, { cause: error2 });
   }
   const certAttestationHash = new TextDecoder().decode(hashBytes);
   const computedHash = await hashAttestationDocument(attestationDoc);
@@ -12331,10 +12331,10 @@ var Verifier = class {
       try {
         amdVerification = await verifyAttestation2(attestationDoc, vcek);
         steps.verifyEnclave = { status: "success" };
-      } catch (error) {
-        steps.verifyEnclave = { status: "failed", error: error.message };
+      } catch (error2) {
+        steps.verifyEnclave = { status: "failed", error: error2.message };
         this.saveFailedVerificationDocument(steps, domain);
-        throw error;
+        throw error2;
       }
       let codeMeasurements;
       let releaseTag;
@@ -12343,26 +12343,26 @@ var Verifier = class {
         codeMeasurements = verifiedCode.measurement;
         releaseTag = verifiedCode.releaseTag;
         steps.verifyCode = { status: "success" };
-      } catch (error) {
-        steps.verifyCode = { status: "failed", error: error.message };
+      } catch (error2) {
+        steps.verifyCode = { status: "failed", error: error2.message };
         this.saveFailedVerificationDocument(steps, domain);
-        throw error;
+        throw error2;
       }
       try {
         compareMeasurements(codeMeasurements, amdVerification.measurement);
         steps.compareMeasurements = { status: "success" };
-      } catch (error) {
-        steps.compareMeasurements = { status: "failed", error: error.message };
+      } catch (error2) {
+        steps.compareMeasurements = { status: "failed", error: error2.message };
         this.saveFailedVerificationDocument(steps, domain);
-        throw error;
+        throw error2;
       }
       try {
         await verifyCertificate(enclaveCert, domain, attestationDoc, amdVerification.hpkePublicKey || "");
         steps.verifyCertificate = { status: "success" };
-      } catch (error) {
-        steps.verifyCertificate = { status: "failed", error: error.message };
+      } catch (error2) {
+        steps.verifyCertificate = { status: "failed", error: error2.message };
         this.saveFailedVerificationDocument(steps, domain);
-        throw error;
+        throw error2;
       }
       this.verificationDocument = {
         schemaVersion: VERIFICATION_DOCUMENT_SCHEMA_VERSION,
@@ -12383,11 +12383,11 @@ var Verifier = class {
         steps
       };
       return amdVerification;
-    } catch (error) {
+    } catch (error2) {
       if (!this.verificationDocument) {
         this.saveFailedVerificationDocument(steps, domain);
       }
-      throw error;
+      throw error2;
     }
   }
   saveFailedVerificationDocument(steps, domain) {
@@ -13112,13 +13112,13 @@ function pinnedRequest({ host, path, method = "POST", headers = {}, body, finger
   });
 }
 var attesterFor = (decl) => decl && decl.root === "nitro" ? { attest: ensureToolAttested2, forget: forgetToolAttestation2 } : { attest: ensureToolAttested, forget: forgetToolAttestation };
-async function callAttestedTool(decl, { apiKey, files = [], query = {}, json, timeoutMs } = {}, deps = {}) {
+async function callAttestedTool(decl, { apiKey, files = [], query = {}, json: json2, timeoutMs } = {}, deps = {}) {
   const { attest = attesterFor(decl).attest, forget = attesterFor(decl).forget, port, ca } = deps;
   const qs = new URLSearchParams(Object.entries(query).filter(([, v]) => v != null)).toString();
   const path = decl.path + (qs ? `?${qs}` : "");
   for (let attempt = 0; ; attempt++) {
     const att = await attest(decl);
-    const { body, contentType } = json !== void 0 ? { body: Buffer.from(JSON.stringify(json), "utf8"), contentType: "application/json" } : multipart(files);
+    const { body, contentType } = json2 !== void 0 ? { body: Buffer.from(JSON.stringify(json2), "utf8"), contentType: "application/json" } : multipart(files);
     try {
       return await pinnedRequest({ host: decl.host, path, headers: { ...apiKey ? { authorization: `Bearer ${apiKey}` } : {}, "content-type": contentType, accept: "application/json" }, body, fingerprint: att.fingerprint, timeoutMs, port, ca: att.ca || ca });
     } catch (e) {
@@ -14037,9 +14037,51 @@ function mergeSeen(a, b) {
   return since === a.since && at === a.at ? a : { since, at };
 }
 
+// tools/code-mkdir.mjs
+import { mkdirSync as mkdirSync3, realpathSync as realpathSync3 } from "node:fs";
+import { posix as posix2 } from "node:path";
+
+// spaces/public/codeMkdir.js
+var MKDIR_ROUTE = "/witbitz/mkdir";
+
+// tools/code-mkdir.mjs
+var error = (st, message) => ({ st, b: JSON.stringify({ error: message }) });
+var CLEAN = /^[^./][A-Za-z0-9._ ()-]*$/;
+function isCleanName(n) {
+  const s = String(n || "");
+  return !!s && s.length <= 120 && CLEAN.test(s) && !s.includes("..") && !/[\/\0]/.test(s) && !/[^ -~]/.test(s);
+}
+function mkdirIn({ root, rel, name }) {
+  if (!isCleanName(name)) return error(400, "a folder name: no /, . or .., and not hidden");
+  if (typeof root !== "string" || !root.startsWith("/")) return error(400, "not a root folder");
+  const relPath = typeof rel === "string" && rel && rel !== "." ? rel.replace(/[\\/]+$/, "").replace(/^\//, "") : "";
+  const abs = posix2.normalize(`${root}/${relPath}/${name}`);
+  let realRoot = "";
+  try {
+    realRoot = realpathSync3(root);
+  } catch {
+    return error(404, "the root folder is not on this computer");
+  }
+  let realParent = "";
+  try {
+    realParent = realpathSync3(posix2.dirname(abs));
+  } catch {
+    return error(404, "the parent folder is not on this computer");
+  }
+  if (realParent !== realRoot && !realParent.startsWith(realRoot + posix2.sep)) return error(403, "that lies outside the root");
+  const target = posix2.join(realParent, name);
+  try {
+    mkdirSync3(target, { mode: 448 });
+  } catch (e) {
+    if (e && e.code === "EEXIST") return error(409, "already there");
+    return error(500, `could not create it here (${String(e && e.message || e).slice(0, 120)})`);
+  }
+  return { st: 200, b: JSON.stringify({ ok: true, path: target }) };
+}
+
 // tools/opencode-plugins/witbitz-notes.js
 import { createHash as createHash6 } from "node:crypto";
-import { existsSync as existsSync4, readFileSync as readFileSync5, statSync as statSync3, mkdirSync as mkdirSync3, writeFileSync as writeFileSync4, chmodSync as chmodSync4, readdirSync as readdirSync2, renameSync as renameSync3, rmdirSync } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync5, statSync as statSync3, mkdirSync as mkdirSync4, writeFileSync as writeFileSync4, chmodSync as chmodSync4, readdirSync as readdirSync2, renameSync as renameSync3, rmdirSync } from "node:fs";
 import { homedir as homedir5 } from "node:os";
 import { basename as basename2, join as join5, resolve as resolve2 } from "node:path";
 var NOTES_ROOT = process.env.WITBITZ_NOTES_DIR || join5(homedir5(), ".local", "share", "witbitz-notes");
@@ -14157,9 +14199,11 @@ var CORRECTION = [
   /\bactually\b/i,
   /(לא נכון|טעות|טעית|שכחת|פספסת|לא מעודכן|צריך להיות|במקום|תמיד|אף פעם|מעכשיו|בפעם הבאה|תזכור|זה לא)/
 ];
-function looksLikeCorrection(text) {
+var STANDING_RULE = /\b(from now on|in future|in the future|every time|remember that|keep in mind)\b|(מעכשיו|בפעם הבאה|תזכור|מהיום)/i;
+function looksLikeCorrection(text, { first = false } = {}) {
   const t = String(text || "");
-  return !!t.trim() && CORRECTION.some((re) => re.test(t));
+  if (!t.trim()) return false;
+  return first ? STANDING_RULE.test(t) : CORRECTION.some((re) => re.test(t));
 }
 var lineCount = (text) => text.trim().split("\n").length;
 var overLimit = (text, file) => lineCount(text) > CAP.indexLines || text.length > CAP.index ? [`\u26A0 ${file} is over its limit (${lineCount(text)} lines): rewrite it \u2014 one short line per note; merge or delete stale notes.`] : [];
@@ -14208,6 +14252,7 @@ function buildInjection({ paths, agents = "", index = "", subagent = false, corr
     'Check: did the person correct you or confirm an approach, tell you something about themselves, decide something with you, or did you run into a trap that cost real effort and that the code does not show? If so, your LAST step before the final answer is to save it as a note, as above. If not, save nothing and end your answer with "Notes: nothing new."',
     "A message saying you missed something, got something wrong or should do it differently is a correction: save what you should have known as a feedback note, after you fix it \u2014 even if you decided earlier in this session that nothing was worth a note.",
     'Do this check on every turn, also a short one that only makes a quick fix. "Notes: nothing new." goes in your answer only, never inside a note.',
+    'Keep this bookkeeping out of what you tell the person: never mention checking or saving notes in your progress updates or answer \u2014 only the closing "Notes: nothing new." line.',
     "Use the write and edit tools \u2014 the folder already exists, so no shell commands."
   );
   return out.join("\n");
@@ -14221,7 +14266,7 @@ function mergeOldConfidential(dir, notes) {
       const src = join5(from, name);
       if (name === "INDEX.md" && from === old) continue;
       if (statSync3(src).isDirectory()) {
-        mkdirSync3(join5(to, name), { recursive: true, mode: 448 });
+        mkdirSync4(join5(to, name), { recursive: true, mode: 448 });
         move(src, join5(to, name), join5(rel, name));
         try {
           rmdirSync(src);
@@ -14265,7 +14310,7 @@ var WitbitzNotes = async (ctx = {}) => {
   const paths = notesPaths(root, ctx.__notesRoot || NOTES_ROOT);
   try {
     for (const d of [paths.dir, paths.notes]) {
-      mkdirSync3(d, { recursive: true, mode: 448 });
+      mkdirSync4(d, { recursive: true, mode: 448 });
       chmodSync4(d, 448);
     }
     mergeOldConfidential(paths.dir, paths.notes);
@@ -14296,14 +14341,16 @@ var WitbitzNotes = async (ctx = {}) => {
     return sub;
   };
   const corrections = /* @__PURE__ */ new Map();
+  const spoken = /* @__PURE__ */ new Set();
   return {
     "chat.message": async (input, output) => {
       try {
         const sid = input && input.sessionID;
         if (!sid) return;
         const text = (output && output.parts || []).filter((p) => p && p.type === "text" && !p.synthetic).map((p) => p.text || "").join("\n");
-        if (looksLikeCorrection(text)) corrections.set(sid, text);
+        if (looksLikeCorrection(text, { first: !spoken.has(sid) })) corrections.set(sid, text);
         else corrections.delete(sid);
+        spoken.add(sid);
       } catch {
       }
     },
@@ -14385,13 +14432,108 @@ function probeTools({ env = process.env, platform = process.platform, home = hom
 }
 
 // tools/code-auto-runner.mjs
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync5, appendFileSync, mkdirSync as mkdirSync4, existsSync as existsSync5, renameSync as renameSync4, lstatSync as lstatSync2, realpathSync as realpathSync3 } from "node:fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync5, appendFileSync, mkdirSync as mkdirSync5, existsSync as existsSync5, renameSync as renameSync4, lstatSync as lstatSync2, realpathSync as realpathSync4 } from "node:fs";
 import { dirname as dirname2 } from "node:path";
 import { homedir as homedir7 } from "node:os";
 
 // tools/code-auto.mjs
 import { createHash as createHash7 } from "node:crypto";
-import { posix as posix2 } from "node:path";
+import { posix as posix3 } from "node:path";
+
+// spaces/public/codeFolders.js
+var FOLDER_ROUTE = "/witbitz/folder";
+var SYSTEM = ["/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/libx32", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var"];
+var SECRET_PARTS = /* @__PURE__ */ new Set([".ssh", ".aws", ".gnupg", ".kube", ".docker", ".git"]);
+var GLOB = /[*?[\]{}]/;
+function normAbs(p) {
+  if (typeof p !== "string" || !p.startsWith("/") || p.includes("\0")) return "";
+  const out = [];
+  for (const part of p.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") out.pop();
+    else out.push(part);
+  }
+  return "/" + out.join("/");
+}
+var under = (p, root) => root === "/" ? p.startsWith("/") : p === root || p.startsWith(root + "/");
+function folderRoot(dir, { home = "", hasGit = () => false } = {}) {
+  const d = normAbs(dir);
+  const h = normAbs(home) === "/" ? "" : normAbs(home);
+  if (!d || d === "/" || h && d === h || GLOB.test(d)) return null;
+  if (d.split("/").some((part) => SECRET_PARTS.has(part))) return null;
+  if (SYSTEM.some((s) => under(d, s))) return null;
+  if (h && under(h, d)) return null;
+  const inHome = !!h && under(d, h);
+  if (inHome && d.slice(h.length + 1).startsWith(".")) return null;
+  for (let p = d; p !== "/" && !(h && p === h) && p !== "/tmp"; p = p.slice(0, p.lastIndexOf("/")) || "/") {
+    if (inHome && !under(p, h)) break;
+    let git = false;
+    try {
+      git = !!hasGit(p);
+    } catch {
+      git = false;
+    }
+    if (git) return p;
+  }
+  if (inHome) return h + "/" + d.slice(h.length + 1).split("/")[0];
+  if (under(d, "/tmp")) return d === "/tmp" ? "/tmp" : "/tmp/" + d.slice(5).split("/")[0];
+  return d;
+}
+function askDirs(ask) {
+  const pats = ask && Array.isArray(ask.patterns) ? ask.patterns : [];
+  if (!pats.length) return null;
+  const dirs = [];
+  for (const p of pats) {
+    if (typeof p !== "string" || !p.endsWith("/*")) return null;
+    const d = normAbs(p.slice(0, -2));
+    if (!d || GLOB.test(p.slice(0, -2))) return null;
+    dirs.push(d);
+  }
+  return dirs;
+}
+function foldersForAsk(ask, opts) {
+  if (!ask || ask.permission !== "external_directory") return null;
+  const dirs = askDirs(ask);
+  if (!dirs) return null;
+  const roots = [];
+  for (const d of dirs) {
+    const r = folderRoot(d, opts);
+    if (!r) return null;
+    if (!roots.includes(r)) roots.push(r);
+  }
+  return roots;
+}
+var folderRule = (root) => ({ permission: "external_directory", pattern: root + "/*", action: "allow" });
+function allowedFolders(rules) {
+  const last = /* @__PURE__ */ new Map();
+  for (const r of Array.isArray(rules) ? rules : []) {
+    if (!r || r.permission !== "external_directory" || typeof r.pattern !== "string" || !r.pattern.endsWith("/*")) continue;
+    last.set(r.pattern, r.action);
+  }
+  const out = [];
+  for (const [pattern, action] of last) {
+    const d = normAbs(pattern.slice(0, -2));
+    if (action === "allow" && d && d !== "/" && !GLOB.test(pattern.slice(0, -2)) && !out.includes(d)) out.push(d);
+  }
+  return out;
+}
+var insideFolders = (abs, folders) => {
+  const a = normAbs(abs);
+  return !!a && (Array.isArray(folders) ? folders : []).some((f) => {
+    const r = normAbs(f);
+    return !!r && r !== "/" && under(a, r);
+  });
+};
+function foldersCover(ask, folders) {
+  const dirs = askDirs(ask);
+  return !!dirs && dirs.every((d) => insideFolders(d, folders));
+}
+var displayPath = (p, home) => {
+  const h = normAbs(home);
+  return h && h !== "/" && under(p, h) ? "~" + p.slice(h.length) : p;
+};
+
+// tools/code-auto.mjs
 var SEVERITY_CEILING = 70;
 var MAX_REQUEST_CHARS = 4e3;
 var MAX_MESSAGES = 6;
@@ -14508,7 +14650,16 @@ function hardDeny(shell, ctx) {
 }
 var READ_ONLY = /* @__PURE__ */ new Set(["ls", "pwd", "cat", "head", "tail", "wc", "file", "stat", "du", "df", "which", "whoami", "date", "uname", "tree", "grep", "egrep", "fgrep", "rg", "sort", "uniq", "cut", "tr", "jq", "basename", "dirname", "realpath", "echo", "true", "diff", "cmp", "find", "git"]);
 var GIT_READ = /* @__PURE__ */ new Set(["status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "describe", "shortlog", "grep", "branch", "remote", "tag"]);
-function wordStaysInProject(w, dir) {
+function projectRoots(ctx) {
+  const roots = [];
+  for (const r of [ctx.directory, ...Array.isArray(ctx.folders) ? ctx.folders : []]) {
+    const d = posix3.normalize(String(r || "")).replace(/\/+$/, "");
+    if (d && d.startsWith("/") && !roots.includes(d)) roots.push(d);
+  }
+  return roots;
+}
+var rootOf = (abs, roots) => roots.find((d) => abs === d || abs.startsWith(d + "/")) || "";
+function wordStaysInProject(w, ctx) {
   let v = w;
   if (v.startsWith("-")) {
     const eq = v.indexOf("=");
@@ -14516,11 +14667,16 @@ function wordStaysInProject(w, dir) {
     v = v.slice(eq + 1);
     if (!v) return true;
   }
-  if (v.includes("$") || v.startsWith("~") || /(^|\/)\.\.(\/|$)/.test(v)) return false;
+  if (v.includes("$") || /(^|\/)\.\.(\/|$)/.test(v)) return false;
+  if (v.startsWith("~")) {
+    const home = posix3.normalize(String(ctx.home || "")).replace(/\/+$/, "");
+    if (!(v === "~" || v.startsWith("~/")) || !home.startsWith("/") || !(Array.isArray(ctx.folders) && ctx.folders.length)) return false;
+    v = home + v.slice(1);
+  }
   if (v.startsWith("/")) {
-    const d = posix2.normalize(String(dir || "")).replace(/\/+$/, "");
-    const abs = posix2.normalize(v);
-    return !!d && d.startsWith("/") && (abs === d || abs.startsWith(d + "/")) && !sensitivePath2(abs.slice(d.length));
+    const abs = posix3.normalize(v);
+    const d = rootOf(abs, projectRoots(ctx));
+    return !!d && !sensitivePath2(abs.slice(d.length));
   }
   return !sensitivePath2("/" + v);
 }
@@ -14540,7 +14696,7 @@ function segmentReadOnly(words, ctx) {
   const { name, args, prefixed } = programOf(words);
   if (prefixed || !READ_ONLY.has(name)) return false;
   if (WRITES[name] && WRITES[name](args)) return false;
-  if (!args.every((a) => wordStaysInProject(a, ctx.directory))) return false;
+  if (!args.every((a) => wordStaysInProject(a, ctx))) return false;
   if (name === "find") return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/.test(a));
   if (name === "rg") return !args.some((a) => /^--pre(=|$)/.test(a) || a === "--pre-glob");
   if (name === "git") {
@@ -14586,13 +14742,15 @@ function sensitivePath2(abs) {
   if (/\.(pem|key|p12|pfx|jks|keystore)$/i.test(base)) return true;
   return /secret|credential/i.test(base);
 }
-function editInsideProject(patterns, directory) {
-  const dir = posix2.normalize(String(directory || "")).replace(/\/+$/, "");
+function editInsideProject(patterns, ctx) {
+  const dir = posix3.normalize(String(ctx.directory || "")).replace(/\/+$/, "");
   if (!dir || !dir.startsWith("/") || !Array.isArray(patterns) || !patterns.length) return false;
+  const roots = projectRoots(ctx);
   return patterns.every((p) => {
     if (typeof p !== "string" || !p || /[*?[\]{}]/.test(p)) return false;
-    const abs = posix2.normalize(p.startsWith("/") ? p : dir + "/" + p);
-    return abs.startsWith(dir + "/") && !sensitivePath2(abs.slice(dir.length));
+    const abs = posix3.normalize(p.startsWith("/") ? p : dir + "/" + p);
+    const d = roots.find((r) => abs.startsWith(r + "/")) || "";
+    return !!d && !sensitivePath2(abs.slice(d.length));
   });
 }
 var SCRATCH_DIR = "/tmp/opencode";
@@ -14600,7 +14758,7 @@ function inScratch(p, glob) {
   if (typeof p !== "string" || !p) return false;
   const v = glob && p.endsWith("/*") ? p.slice(0, -2) : p;
   if (/[*?[\]{}]/.test(v) || !v.startsWith("/")) return false;
-  const abs = posix2.normalize(v);
+  const abs = posix3.normalize(v);
   return (abs === SCRATCH_DIR || abs.startsWith(SCRATCH_DIR + "/")) && !sensitivePath2(abs.slice(SCRATCH_DIR.length));
 }
 var metadataOf = (req) => req.metadata && typeof req.metadata === "object" ? req.metadata : {};
@@ -14615,7 +14773,7 @@ function editInScratch(patterns) {
 }
 function scratchPaths(req) {
   const md = metadataOf(req || {});
-  return [...Array.isArray(req && req.patterns) ? req.patterns : [], md.filepath, md.parentDir].filter((p) => typeof p === "string" && p).map((p) => posix2.normalize(p.endsWith("/*") ? p.slice(0, -2) : p));
+  return [...Array.isArray(req && req.patterns) ? req.patterns : [], md.filepath, md.parentDir].filter((p) => typeof p === "string" && p).map((p) => posix3.normalize(p.endsWith("/*") ? p.slice(0, -2) : p));
 }
 function classifyDeterministic(req, ctx = {}) {
   if (!req || typeof req.permission !== "string") return null;
@@ -14627,11 +14785,15 @@ function classifyDeterministic(req, ctx = {}) {
     if (bashReadOnly(shell, ctx)) return { stage: "fast-allow", decision: "allow", rule: "fast:read-only-shell", reason: "reads only" };
     return null;
   }
-  if ((req.permission === "edit" || req.permission === "write") && editInsideProject(req.patterns, ctx.directory)) {
+  if ((req.permission === "edit" || req.permission === "write") && editInsideProject(req.patterns, ctx)) {
     return { stage: "fast-allow", decision: "allow", rule: "fast:edit-in-project", reason: "an edit inside the project to an ordinary file" };
   }
   const SCRATCH = { stage: "fast-allow", decision: "allow", rule: "fast:agent-scratch", reason: `the agent's own intermediate files under ${SCRATCH_DIR}` };
   if (req.permission === "external_directory" && askInScratch(req)) return SCRATCH;
+  if (req.permission === "external_directory") {
+    if (Array.isArray(ctx.folders) && ctx.folders.length && foldersCover(req, ctx.folders)) return { stage: "fast-allow", decision: "allow", rule: "fast:allowed-folder", reason: "inside a folder the person allowed for this conversation" };
+    return { stage: "fast-ask", decision: "ask", rule: "ask:new-folder", reason: "a folder outside the project \u2014 allow it once and the whole folder is open for this conversation" };
+  }
   if ((req.permission === "edit" || req.permission === "write") && editInScratch(req.patterns)) return SCRATCH;
   return null;
 }
@@ -14646,7 +14808,8 @@ SOFT DENY \u2014 deny unless the person's recent messages clearly ask for exactl
 network uploads or downloads the task does not need; piping a download into a shell (curl \u2026 | sh); deleting anything
 outside build, cache or generated directories; git push (above all --force) and history rewrites of shared branches;
 deploy, publish or release commands; reading, printing or moving credentials, tokens, keys or secret stores; changing
-system configuration; sudo; any other path outside the project directory; long-running servers exposed beyond localhost.
+system configuration; sudo; any other path outside the project directory (folders in allowed_folders ARE part of the
+project: the person allowed them for this conversation); long-running servers exposed beyond localhost.
 
 HARD DENY \u2014 always deny: sending code, secrets or environment variables to an outside destination (exfiltration);
 destroying the home directory or the filesystem; disabling security controls.
@@ -14664,7 +14827,7 @@ var cut = (s, n) => {
   const t = String(s == null ? "" : s);
   return t.length > n ? t.slice(0, n) + ` \u2026[${t.length - n} more chars]` : t;
 };
-function reviewerPrompt({ req, directory, userMessages = [], tool = "" }) {
+function reviewerPrompt({ req, directory, userMessages = [], tool = "", folders = [] }) {
   const r = req || {};
   const command = r.metadata && typeof r.metadata.command === "string" ? r.metadata.command : "";
   const file = !command && r.metadata && typeof r.metadata.filepath === "string" ? r.metadata.filepath : "";
@@ -14676,6 +14839,7 @@ function reviewerPrompt({ req, directory, userMessages = [], tool = "" }) {
     ...typeof tool === "string" && tool ? [`tool: ${cut(tool, 64)}`] : [],
     ...file ? [`file: ${cut(file, 1024)}`] : [],
     `project_directory: ${cut(directory, 512)}`,
+    ...Array.isArray(folders) && folders.length ? [`allowed_folders: ${cut(folders.join(", "), 1024)}`] : [],
     "</request>",
     '<recent_user_messages oldest_first="true">',
     ...msgs.map((m, i) => `[${i + 1}] ${cut(m, MAX_MESSAGE_CHARS)}`),
@@ -14787,12 +14951,12 @@ function scratchOnDisk(paths, { dir = SCRATCH_DIR } = {}) {
   try {
     const st = lstatSync2(dir);
     if (!st.isDirectory() || typeof process.getuid === "function" && st.uid !== process.getuid()) return false;
-    const root = realpathSync3(dir);
+    const root = realpathSync4(dir);
     for (const p of paths) {
       for (let cur = p; ; ) {
         let real = null;
         try {
-          real = realpathSync3(cur);
+          real = realpathSync4(cur);
         } catch {
           let exists = false;
           try {
@@ -14817,7 +14981,7 @@ function scratchOnDisk(paths, { dir = SCRATCH_DIR } = {}) {
   }
 }
 function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath, logPath, pollMs = 1e3, reviewTimeoutMs = 3e4, home = homedir7(), onVerdict = () => {
-}, log = console.error, now = Date.now, scratchCheck = scratchOnDisk }) {
+}, log = console.error, now = Date.now, scratchCheck = scratchOnDisk, listAsks = null }) {
   const root = String(base || "").replace(/\/+$/, "");
   const auto = /* @__PURE__ */ new Map();
   const handled = /* @__PURE__ */ new Map();
@@ -14836,7 +15000,7 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
   const save = () => {
     if (!statePath) return;
     try {
-      mkdirSync4(dirname2(statePath), { recursive: true });
+      mkdirSync5(dirname2(statePath), { recursive: true });
       const tmp = statePath + ".tmp";
       writeFileSync5(tmp, JSON.stringify({ sessions: Object.fromEntries(auto) }, null, 2), { mode: 384 });
       renameSync4(tmp, statePath);
@@ -14847,7 +15011,7 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
   const appendLog = (rec) => {
     if (!logPath) return;
     try {
-      mkdirSync4(dirname2(logPath), { recursive: true });
+      mkdirSync5(dirname2(logPath), { recursive: true });
       appendFileSync(logPath, JSON.stringify(rec) + "\n", { mode: 384 });
     } catch (e) {
       log(`code-auto: could not write ${logPath} (${e.message})`);
@@ -14856,12 +15020,12 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
   const q = (path, dir) => `${root}${path}${path.includes("?") ? "&" : "?"}directory=${encodeURIComponent(dir)}`;
   async function call2(method, path, dir, body, signal) {
     const r = await fetchImpl(q(path, dir), { method, headers: { ...auth(), ...body !== void 0 ? { "content-type": "application/json" } : {} }, body: body !== void 0 ? JSON.stringify(body) : void 0, signal });
-    let json = null;
+    let json2 = null;
     try {
-      json = await r.json();
+      json2 = await r.json();
     } catch {
     }
-    return { ok: r.ok, status: r.status, json };
+    return { ok: r.ok, status: r.status, json: json2 };
   }
   async function reply(req, dir, answer2, message) {
     try {
@@ -14938,11 +15102,19 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
     if (asks === false) return { stage: "fast-ask", decision: "ask", rule: "ask:subagent-unguarded", reason: `the ${name} agent's own commands would run without asking \u2014 start it yourself if you trust it` };
     return null;
   }
-  async function review(req, dir, owner = req.sessionID) {
+  async function foldersOf(sid, dir) {
+    try {
+      const r = await call2("GET", `/session/${encodeURIComponent(sid)}`, dir);
+      return r.ok && r.json ? allowedFolders(r.json.permission) : [];
+    } catch {
+      return [];
+    }
+  }
+  async function review(req, dir, owner = req.sessionID, folders = []) {
     const { model, userMessages, tools } = await sessionContext(owner, dir);
     if (!model) return { verdict: null, model: "", note: "the session has no model to review with yet" };
     const tool = req.tool && typeof req.tool.callID === "string" && tools.get(req.tool.callID) || "";
-    const prompt = reviewerPrompt({ req, directory: dir, userMessages, tool });
+    const prompt = reviewerPrompt({ req, directory: dir, userMessages, tool, folders });
     const created = await call2("POST", "/session", dir, { title: REVIEW_TITLE, permission: [{ permission: "*", pattern: "*", action: "deny" }] });
     const rid = created.json && created.json.id;
     if (!rid) return { verdict: null, model: `${model.providerID}/${model.modelID}`, note: "could not open a review session" };
@@ -14981,7 +15153,8 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
   };
   async function decide(req, dir, owner = req.sessionID) {
     const t0 = now();
-    let det = classifyDeterministic(req, { directory: dir, home });
+    const folders = await foldersOf(req.sessionID, dir);
+    let det = classifyDeterministic(req, { directory: dir, home, folders });
     if (det && det.rule === "fast:agent-scratch" && !scratchCheck(scratchPaths(req))) det = null;
     det = det || await classifySubagent(req, dir);
     let stage, verdict, model = "", note = "";
@@ -14990,7 +15163,7 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
       verdict = { decision: det.decision, severity: det.stage === "hard-deny" ? 100 : det.stage === "fast-ask" ? 50 : 0, rule: det.rule, reason: det.reason };
     } else {
       stage = "reviewer";
-      ({ verdict, model, note } = await review(req, dir, owner));
+      ({ verdict, model, note } = await review(req, dir, owner, folders));
     }
     const action = det ? det.decision : actionFor(verdict);
     const rec = logRecord({ req, stage, verdict, action, model, ms: now() - t0, at: t0 });
@@ -15006,11 +15179,11 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
     appendLog(answered === false ? { ...rec, answered: false } : rec);
     emit(req, stage, action, rec, reason, answered);
   }
-  async function releaseHeld(dir, pending) {
+  async function releaseHeld(dir, pending2) {
     for (const [sid, refusals] of held) {
       const mine = [...refusals.values()].filter((h) => h.dir === dir);
       if (!mine.length) continue;
-      const pendingIds = new Set(pending.filter((p) => p && p.sessionID === sid).map((p) => p.id));
+      const pendingIds = new Set(pending2.filter((p) => p && p.sessionID === sid).map((p) => p.id));
       for (const h of mine) {
         if (pendingIds.has(h.req.id)) continue;
         refusals.delete(h.req.id);
@@ -15027,6 +15200,21 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
       if (!refusals.size) held.delete(sid);
     }
   }
+  async function pending(dir) {
+    if (listAsks) {
+      try {
+        return await listAsks(dir);
+      } catch {
+        return null;
+      }
+    }
+    try {
+      const r = await call2("GET", "/permission", dir);
+      return r.ok && Array.isArray(r.json) ? r.json : null;
+    } catch {
+      return null;
+    }
+  }
   async function poll() {
     if (polling || stopped || !auto.size) return;
     polling = true;
@@ -15035,13 +15223,8 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
       for (const [id, at] of handled) if (at < cutoff) handled.delete(id);
       const dirs = new Set([...auto.values()].map((v) => v.dir));
       for (const dir of dirs) {
-        let list = [];
-        try {
-          const r = await call2("GET", "/permission", dir);
-          list = Array.isArray(r.json) ? r.json : [];
-        } catch {
-          continue;
-        }
+        const list = await pending(dir);
+        if (!list) continue;
         for (const req of list) {
           if (!req || typeof req.id !== "string" || typeof req.sessionID !== "string" || handled.has(req.id)) continue;
           const owner = await ownerOf(req.sessionID, dir);
@@ -15081,15 +15264,156 @@ function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath
   };
 }
 
+// tools/code-asks.mjs
+var ASK_FRAME = /"(?:permission\.(?:asked|replied)|session\.(?:idle|status|deleted)|server\.instance\.disposed|global\.disposed)"/;
+var MAX_PER_DIR = 200;
+var MAX_GONE = 1e3;
+var str = (x) => typeof x === "string" && x ? x : "";
+var isAsk = (a) => !!a && typeof a === "object" && !Array.isArray(a) && !!str(a.id) && !!str(a.sessionID);
+function createAskBook() {
+  const byDir = /* @__PURE__ */ new Map();
+  const gone = /* @__PURE__ */ new Map();
+  const forget = (id) => {
+    gone.set(id, true);
+    if (gone.size > MAX_GONE) gone.delete(gone.keys().next().value);
+  };
+  const add2 = (directory, ask) => {
+    if (!directory || !isAsk(ask) || gone.has(ask.id)) return;
+    let asks = byDir.get(directory);
+    if (!asks) byDir.set(directory, asks = /* @__PURE__ */ new Map());
+    if (asks.has(ask.id)) return;
+    asks.set(ask.id, ask);
+    if (asks.size > MAX_PER_DIR) asks.delete(asks.keys().next().value);
+  };
+  const remove = (id) => {
+    for (const [dir, asks] of byDir) if (asks.delete(id) && !asks.size) byDir.delete(dir);
+    forget(id);
+  };
+  const takeDead = (directory, isDead) => {
+    const asks = byDir.get(directory);
+    if (!asks) return [];
+    const dead = [];
+    for (const ask of asks.values()) if (isDead(ask)) dead.push({ directory, ask });
+    for (const d of dead) remove(d.ask.id);
+    return dead;
+  };
+  return {
+    /** One /global/event frame ({directory, payload: {type, properties}}). Returns the asks it showed to be dead. */
+    apply(frame) {
+      const directory = str(frame && frame.directory);
+      const payload = frame && frame.payload;
+      const type = str(payload && payload.type);
+      const p = payload && payload.properties && typeof payload.properties === "object" ? payload.properties : {};
+      if (type === "global.disposed") {
+        byDir.clear();
+        return [];
+      }
+      if (type === "server.instance.disposed") {
+        byDir.delete(str(p.directory) || directory);
+        return [];
+      }
+      if (!directory) return [];
+      if (type === "permission.asked") {
+        add2(directory, p);
+        return [];
+      }
+      if (type === "permission.replied") {
+        const id = str(p.requestID) || str(p.id);
+        if (id) remove(id);
+        return [];
+      }
+      const sid = str(p.sessionID) || str(p.info && p.info.id);
+      if (!sid) return [];
+      const idle = type === "session.idle" || type === "session.deleted" || type === "session.status" && p.status && p.status.type === "idle";
+      return idle ? takeDead(directory, (ask) => ask.sessionID === sid) : [];
+    },
+    /** Asks OpenCode's own list returned (when it works): added, never removed — it may predate an event already seen. */
+    merge(directory, list) {
+      for (const ask of Array.isArray(list) ? list : []) add2(directory, ask);
+    },
+    /** From GET /session/status (it lists a subagent's session too — busy while its ask waits, measured): every ask whose
+     *  session is not running is dead. `known`: the ask ids recorded BEFORE the status was read — an ask that arrived while
+     *  it was being read belongs to a turn the status may not show yet, and is never taken. */
+    settleIdle(directory, busy, known) {
+      const running = new Set(Array.isArray(busy) ? busy : []);
+      const before = new Set(Array.isArray(known) ? known : []);
+      return takeDead(directory, (ask) => before.has(ask.id) && !running.has(ask.sessionID));
+    },
+    list: (directory) => [...(byDir.get(directory) || /* @__PURE__ */ new Map()).values()],
+    directories: () => [...byDir.keys()]
+  };
+}
+
+// tools/code-folders.mjs
+import { existsSync as existsSync6 } from "node:fs";
+import { homedir as homedir8 } from "node:os";
+var MAX_DEPTH2 = 4;
+var json = (st, o) => ({ st, b: JSON.stringify(o) });
+var hasGitOnDisk = (p) => existsSync6(p + "/.git");
+async function folderRoute({ method, query, body, pending, call: call2, home = homedir8(), hasGit = hasGitOnDisk, log = () => {
+} }) {
+  const u = new URLSearchParams(query || "");
+  const directory = u.get("directory") || "";
+  if (!directory.startsWith("/")) return json(400, { error: "no project folder" });
+  let askId = u.get("ask") || "";
+  if (method === "POST") {
+    let parsed = null;
+    try {
+      parsed = body ? JSON.parse(body) : null;
+    } catch {
+    }
+    askId = parsed && typeof parsed.ask === "string" ? parsed.ask : "";
+  } else if (method !== "GET") return json(405, { error: "GET or POST" });
+  if (!/^per[A-Za-z0-9_-]{1,80}$/.test(askId)) return json(400, { error: "not an approval id" });
+  const list = await pending(directory);
+  if (!list) return json(502, { error: "OpenCode cannot say what is waiting right now" });
+  const ask = list.find((a) => a && a.id === askId);
+  if (!ask) return json(404, { error: "that approval is no longer waiting" });
+  const folders = foldersForAsk(ask, { home, hasGit });
+  if (method === "GET") return json(200, { folders: (folders || []).map((path) => ({ path, display: displayPath(path, home) })) });
+  if (!folders) return json(409, { error: "this is not a folder to allow whole \u2014 allow it once instead" });
+  const chain = [], sessions = /* @__PURE__ */ new Map();
+  for (let sid = ask.sessionID; sid && !chain.includes(sid) && chain.length <= MAX_DEPTH2; ) {
+    const r = await call2("GET", `/session/${encodeURIComponent(sid)}`, directory).catch(() => null);
+    if (!r || !r.ok || !r.json) {
+      if (!chain.length) return json(502, { error: "OpenCode did not return the session" });
+      break;
+    }
+    chain.push(sid);
+    sessions.set(sid, r.json);
+    sid = typeof r.json.parentID === "string" ? r.json.parentID : "";
+  }
+  for (const [i, sid] of chain.entries()) {
+    const s = sessions.get(sid);
+    const have = allowedFolders(s && s.permission);
+    const missing = folders.filter((f) => !have.includes(f)).map(folderRule);
+    if (!missing.length) continue;
+    const p = await call2("PATCH", `/session/${encodeURIComponent(sid)}`, directory, { permission: missing }).catch(() => null);
+    if (!p || !p.ok) {
+      if (i === 0) return json(502, { error: "OpenCode did not take the folder rule" });
+      log(`code-folders: could not allow ${folders.join(", ")} on ${sid} (${p ? p.status : "no answer"})`);
+    }
+  }
+  const answered = [];
+  for (const a of [ask, ...list.filter((x) => x && x !== ask && x.permission === "external_directory" && chain.includes(x.sessionID) && foldersCover(x, folders))]) {
+    const r = await call2("POST", `/permission/${encodeURIComponent(a.id)}/reply`, directory, { reply: "once" }).catch(() => null);
+    if (r && r.ok) answered.push(a.id);
+  }
+  if (!answered.includes(ask.id)) return json(502, { error: "the folder is allowed, but OpenCode did not take the answer \u2014 allow it again" });
+  log(`code-folders: allowed ${folders.join(", ")} for ${chain[0]}`);
+  return json(200, { folders: folders.map((path) => ({ path, display: displayPath(path, home) })), answered });
+}
+
 // tools/opencode-connector.mjs
 var VERSION = "1";
-var PAIRINGS_PATH2 = process.env.WITBITZ_CODE_PAIRINGS || join6(homedir8(), ".witbitz", "code", "pairings.json");
-var CAPS = ["auto", "attachments", "outputs", "tools", "seen"];
-var AUTO_DIR = process.env.WITBITZ_CODE_AUTO_DIR || join6(homedir8(), ".witbitz", "code");
-var DEFAULT_ENV = process.env.OPENCODE_ENV_FILE || join6(homedir8(), ".opencode-server.env");
+var PAIRINGS_PATH2 = process.env.WITBITZ_CODE_PAIRINGS || join6(homedir9(), ".witbitz", "code", "pairings.json");
+var CAPS = ["auto", "attachments", "outputs", "tools", "seen", "asks", "folders"];
+var AUTO_DIR = process.env.WITBITZ_CODE_AUTO_DIR || join6(homedir9(), ".witbitz", "code");
+var DEFAULT_ENV = process.env.OPENCODE_ENV_FILE || join6(homedir9(), ".opencode-server.env");
 var REQUEST_TIMEOUT_MS = 3e4;
 var HELLO_EVERY_MS = 2e4;
 var SUB_TTL_MS = 75e3;
+var ASKS_RECONCILE_MS = 3e4;
 var MAX_RESPONSE = 30 * 1024 * 1024;
 var START_HINT2 = true ? "node witbitz-code.mjs serve" : "bash tools/opencode-serve.sh";
 function parseEnvPassword(text) {
@@ -15101,7 +15425,7 @@ function parseEnvPassword(text) {
   return v;
 }
 function loadPairings(path = PAIRINGS_PATH2, log = console.error) {
-  if (!existsSync6(path)) return [];
+  if (!existsSync7(path)) return [];
   let doc;
   try {
     doc = JSON.parse(readFileSync7(path, "utf8"));
@@ -15139,14 +15463,14 @@ function sseReader(onData) {
     }
   };
 }
-async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1e3, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, toolsProbe = probeTools, caps = CAPS } = {}) {
+async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1e3, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, toolsProbe = probeTools, caps = CAPS, asksReconcileMs = ASKS_RECONCILE_MS } = {}) {
   const running = [];
   try {
     const n = pruneAttachments(attachRoot);
     if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`);
   } catch {
   }
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe, caps }));
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe, caps, asksReconcileMs }));
   return {
     peers: running.map((r) => r.peer),
     /** What the confidential-model proxy is doing for a session (code-confidential.mjs onProgress), to the phones. */
@@ -15159,7 +15483,7 @@ async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = glo
     }
   };
 }
-var NOTES_PLUGIN = join6(homedir8(), ".config", "opencode", "plugins", "witbitz-notes.js");
+var NOTES_PLUGIN = join6(homedir9(), ".config", "opencode", "plugins", "witbitz-notes.js");
 var readerKey = "";
 var reader = null;
 function tinfoilReaderForKey() {
@@ -15171,10 +15495,10 @@ function tinfoilReaderForKey() {
   }
   return reader;
 }
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe, caps }) {
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe, caps, asksReconcileMs }) {
   const name = pairing.name || hostname2();
   const base = String(pairing.opencodeUrl || "http://127.0.0.1:4096").replace(/\/+$/, "");
-  const password = () => pairing.password || parseEnvPassword(existsSync6(pairing.envFile || DEFAULT_ENV) ? readFileSync7(pairing.envFile || DEFAULT_ENV, "utf8") : "");
+  const password = () => pairing.password || parseEnvPassword(existsSync7(pairing.envFile || DEFAULT_ENV) ? readFileSync7(pairing.envFile || DEFAULT_ENV, "utf8") : "");
   const auth = () => {
     const pw = password();
     return pw ? { authorization: "Basic " + Buffer.from("opencode:" + pw).toString("base64") } : {};
@@ -15284,10 +15608,32 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
       }
       return reply(200, merged);
     }
+    if (m.m === "POST" && path === MKDIR_ROUTE) {
+      const u = new URLSearchParams(query);
+      const home = u.get("directory"), rel = u.get("path");
+      if (typeof home !== "string" || !home) return reply(400, { error: "no home to create under" });
+      let parsed = null;
+      try {
+        parsed = m.b ? JSON.parse(m.b) : null;
+      } catch {
+      }
+      if (!parsed || typeof parsed !== "object" || typeof parsed.name !== "string") return reply(400, { error: "no folder name" });
+      const out = mkdirIn({ root: home, rel, name: parsed.name });
+      return reply(out.st, out.b);
+    }
+    if (path === FOLDER_ROUTE && (m.m === "GET" || m.m === "POST")) {
+      const out = await folderRoute({ method: m.m, query, body: m.b, pending: pendingAsks, call: opencodeJson, log: (l) => log(`opencode-connector: ${name} \xB7 ${l}`) });
+      return reply(out.st, out.b);
+    }
     if (!allowedRequest(m.m, m.p)) return reply(403, { error: "not allowed by the connector" });
+    if (m.m === "GET" && path === "/permission") {
+      const dir = new URLSearchParams(query).get("directory");
+      const list = dir ? await pendingAsks(dir) : null;
+      if (list) return reply(200, list);
+    }
     let body = typeof m.b === "string" ? m.b : void 0;
     const turnOf = m.m === "POST" && /^\/session\/([^/]+)\/message$/.exec(path);
-    if (turnOf && existsSync6(notesPluginPath)) await ruleNotes(turnOf[1], query);
+    if (turnOf && existsSync7(notesPluginPath)) await ruleNotes(turnOf[1], query);
     if (turnOf && body && body.includes('"file"')) {
       let parsed = null;
       try {
@@ -15362,7 +15708,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   }
   function saveSeen() {
     try {
-      mkdirSync5(autoDir, { recursive: true });
+      mkdirSync6(autoDir, { recursive: true });
       writeFileSync6(seenFile + ".tmp", JSON.stringify(seen), { mode: 384 });
       renameSync5(seenFile + ".tmp", seenFile);
     } catch (e) {
@@ -15371,7 +15717,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   }
   function logOutput(rec) {
     try {
-      mkdirSync5(autoDir, { recursive: true });
+      mkdirSync6(autoDir, { recursive: true });
       appendFileSync2(join6(autoDir, "output-log.jsonl"), JSON.stringify(rec) + "\n", { mode: 384 });
     } catch {
     }
@@ -15495,6 +15841,109 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   helloTimer = setInterval(() => {
     if (peer.peers >= 2) hello();
   }, HELLO_EVERY_MS);
+  const asks = createAskBook();
+  const watch = { ctrl: new AbortController(), live: false, epoch: 0 };
+  const complete = /* @__PURE__ */ new Map();
+  const triedAt = /* @__PURE__ */ new Map();
+  const suspects = /* @__PURE__ */ new Map();
+  const opencodeCall = (method, path, directory, body) => fetchImpl(`${base}${path}${path.includes("?") ? "&" : "?"}directory=${encodeURIComponent(directory)}`, {
+    method,
+    headers: { ...auth(), ...body !== void 0 ? { "content-type": "application/json" } : {} },
+    body: body !== void 0 ? JSON.stringify(body) : void 0,
+    signal: AbortSignal.any([watch.ctrl.signal, AbortSignal.timeout(requestTimeoutMs)])
+  });
+  const opencodeJson = async (method, path, directory, body) => {
+    const r = await opencodeCall(method, path, directory, body);
+    return { ok: r.ok, status: r.status, json: await r.json().catch(() => null) };
+  };
+  async function settleDead(dead) {
+    for (const { directory, ask } of dead) {
+      try {
+        const r = await opencodeCall("POST", `/permission/${encodeURIComponent(ask.id)}/reply`, directory, { reply: "reject" });
+        if (r.ok) log(`opencode-connector: ${name} \xB7 cleared a ${ask.permission || "permission"} approval a stopped turn left waiting`);
+      } catch {
+      }
+    }
+  }
+  async function pendingAsks(directory) {
+    const epoch = watch.live ? watch.epoch : -1;
+    try {
+      const r = await opencodeCall("GET", "/permission", directory);
+      const list = await r.json().catch(() => null);
+      if (r.ok && Array.isArray(list)) {
+        asks.merge(directory, list);
+        if (epoch >= 0 && watch.live && watch.epoch === epoch) complete.set(directory, epoch);
+        return list;
+      }
+    } catch {
+      return null;
+    }
+    return watch.live && complete.get(directory) === watch.epoch ? asks.list(directory) : null;
+  }
+  function learnFolder(directory) {
+    if (!directory || complete.get(directory) === watch.epoch || Date.now() - (triedAt.get(directory) || 0) < 5e3) return;
+    triedAt.set(directory, Date.now());
+    pendingAsks(directory);
+  }
+  async function reconcileAsks() {
+    for (const directory of asks.directories()) {
+      const known = asks.list(directory);
+      try {
+        const r = await opencodeCall("GET", "/session/status", directory);
+        const status = r.ok ? await r.json().catch(() => null) : null;
+        if (!status || typeof status !== "object" || Array.isArray(status)) continue;
+        const busy = Object.keys(status).filter((sid) => status[sid] && status[sid].type !== "idle");
+        const before = suspects.get(directory) || /* @__PURE__ */ new Set();
+        const notRunning = known.filter((a) => !busy.includes(a.sessionID)).map((a) => a.id);
+        suspects.set(directory, new Set(notRunning));
+        await settleDead(asks.settleIdle(directory, busy, notRunning.filter((id) => before.has(id))));
+      } catch {
+      }
+    }
+    for (const directory of [...suspects.keys()]) if (!asks.directories().includes(directory)) suspects.delete(directory);
+  }
+  ;
+  (async () => {
+    let wait = 1e3;
+    while (!watch.ctrl.signal.aborted) {
+      try {
+        const r = await fetchImpl(`${base}/global/event`, { headers: { ...auth(), accept: "text/event-stream" }, signal: watch.ctrl.signal });
+        if (!r.ok || !r.body || !/event-stream/.test(r.headers.get("content-type") || "")) throw new Error(`global event stream ${r.status}`);
+        watch.epoch++;
+        watch.live = true;
+        wait = 1e3;
+        reconcileAsks();
+        const feed = sseReader((data) => {
+          if (!ASK_FRAME.test(data)) return;
+          let frame = null;
+          try {
+            frame = JSON.parse(data);
+          } catch {
+            return;
+          }
+          const dead = asks.apply(frame);
+          if (dead.length) settleDead(dead);
+          learnFolder(frame && typeof frame.directory === "string" ? frame.directory : "");
+        });
+        const dec3 = new TextDecoder();
+        for await (const chunk of r.body) feed(dec3.decode(chunk, { stream: true }));
+      } catch {
+      }
+      watch.live = false;
+      if (watch.ctrl.signal.aborted) break;
+      await new Promise((res) => {
+        const t = setTimeout(res, wait);
+        watch.ctrl.signal.addEventListener("abort", () => {
+          clearTimeout(t);
+          res();
+        }, { once: true });
+      });
+      wait = Math.min(wait * 2, 3e4);
+    }
+  })();
+  const reconcileTimer = setInterval(() => {
+    if (watch.live) reconcileAsks();
+  }, asksReconcileMs);
   const safeId = String(pairing.computerId || "default").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
   auto = startAutoRunner({
     base,
@@ -15502,6 +15951,7 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     fetchImpl,
     log,
     pollMs: autoPollMs,
+    listAsks: pendingAsks,
     statePath: join6(autoDir, `auto-${safeId}.json`),
     logPath: join6(autoDir, "auto-log.jsonl"),
     onVerdict: (v) => peer.send({ t: "autoverdict", ...v, ts: Date.now() })
@@ -15512,6 +15962,8 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     stop: () => {
       clearInterval(sweep);
       clearInterval(helloTimer);
+      clearInterval(reconcileTimer);
+      watch.ctrl.abort();
       if (auto) auto.stop();
       for (const k of [...subs.keys()]) unsubscribe(k, ALL);
       for (const c of inflight.values()) {
@@ -15533,8 +15985,8 @@ if (false) {
 
 // tools/code-setup.mjs
 import { spawnSync } from "node:child_process";
-import { readFileSync as readFileSync8, existsSync as existsSync7, mkdirSync as mkdirSync6, copyFileSync, writeFileSync as writeFileSync7, rmSync as rmSync3, chmodSync as chmodSync5, readdirSync as readdirSync3 } from "node:fs";
-import { homedir as homedir9 } from "node:os";
+import { readFileSync as readFileSync8, existsSync as existsSync8, mkdirSync as mkdirSync7, copyFileSync, writeFileSync as writeFileSync7, rmSync as rmSync3, chmodSync as chmodSync5, readdirSync as readdirSync3 } from "node:fs";
+import { homedir as homedir10 } from "node:os";
 import { join as join7, dirname as dirname3, resolve as resolve4 } from "node:path";
 var KEY_PAGES = { trustedrouter: "https://trustedrouter.com/console/api-keys", tinfoil: "https://dash.tinfoil.sh?tab=api-keys" };
 var TR_KEY_URL = "https://api.trustedrouter.com/v1/key";
@@ -15574,7 +16026,7 @@ async function checkTinfoilKey(key, { fetchImpl = fetch, timeoutMs = 15e3 } = {}
     return { ok: null, why: `could not reach Tinfoil (${e && (e.code || e.name) || e})` };
   }
 }
-var authPath = (env = process.env) => join7(env.XDG_DATA_HOME || join7(homedir9(), ".local", "share"), "opencode", "auth.json");
+var authPath = (env = process.env) => join7(env.XDG_DATA_HOME || join7(homedir10(), ".local", "share"), "opencode", "auth.json");
 function withAuthKey(text, provider, key) {
   let doc = {};
   if (text && String(text).trim()) {
@@ -15600,7 +16052,7 @@ function withPairingPort(doc, pairing, port) {
 var validPort = (port) => Number.isInteger(port) && port > 0 && port < 65536;
 var serviceName = (port) => port === 4096 ? "witbitz-code" : `witbitz-code-${port}`;
 var launchdLabel = (port) => port === 4096 ? "chat.witbitz.code" : `chat.witbitz.code.${port}`;
-var stableScript = (home = homedir9()) => join7(home, ".witbitz", "code", "witbitz-code.mjs");
+var stableScript = (home = homedir10()) => join7(home, ".witbitz", "code", "witbitz-code.mjs");
 var plain = (s) => {
   const v = String(s);
   if (/[\x00-\x1f\x7f]/.test(v)) throw new Error("a path contains a control character");
@@ -15659,15 +16111,15 @@ var runCmd = (cmd2, args) => {
   const r = spawnSync(cmd2, args, { encoding: "utf8" });
   return { status: r.error ? -1 : r.status, stdout: r.stdout || "", stderr: r.stderr || "" };
 };
-function serviceManager({ platform = process.platform, home = homedir9(), env = process.env, run = runCmd, uid = process.getuid ? process.getuid() : 0 } = {}) {
+function serviceManager({ platform = process.platform, home = homedir10(), env = process.env, run = runCmd, uid = process.getuid ? process.getuid() : 0 } = {}) {
   const put = (file, text) => {
-    mkdirSync6(dirname3(file), { recursive: true });
+    mkdirSync7(dirname3(file), { recursive: true });
     writeFileSync7(file, text, { mode: 420 });
   };
   const stage = (script) => {
     const dest = stableScript(home);
     if (resolve4(script) !== resolve4(dest)) {
-      mkdirSync6(dirname3(dest), { recursive: true, mode: 448 });
+      mkdirSync7(dirname3(dest), { recursive: true, mode: 448 });
       copyFileSync(script, dest);
       chmodSync5(dest, 420);
     }
@@ -15690,7 +16142,7 @@ function serviceManager({ platform = process.platform, home = homedir9(), env = 
       outdated,
       available: () => sc("show-environment").status === 0,
       unavailableWhy: "there is no systemd user session here (on WSL, turn systemd on in /etc/wsl.conf: [boot] systemd=true)",
-      status: (port) => existsSync7(unitFile(port)) ? sc("is-active", serviceName(port)).stdout.trim() || "inactive" : "not installed",
+      status: (port) => existsSync8(unitFile(port)) ? sc("is-active", serviceName(port)).stdout.trim() || "inactive" : "not installed",
       install({ node, script, port, path }) {
         let unit;
         try {
@@ -15706,7 +16158,7 @@ function serviceManager({ platform = process.platform, home = homedir9(), env = 
       },
       restart: (port) => sc("restart", serviceName(port)).status === 0,
       uninstall(port) {
-        if (!existsSync7(unitFile(port))) return { ok: true, noop: true };
+        if (!existsSync8(unitFile(port))) return { ok: true, noop: true };
         sc("disable", "--now", serviceName(port));
         rmSync3(unitFile(port), { force: true });
         sc("daemon-reload");
@@ -15726,7 +16178,7 @@ function serviceManager({ platform = process.platform, home = homedir9(), env = 
       available: () => true,
       unavailableWhy: "",
       status: (port) => {
-        if (!existsSync7(plist(port))) return "not installed";
+        if (!existsSync8(plist(port))) return "not installed";
         const r = run("launchctl", ["print", target(port)]);
         return r.status === 0 && /state = running/.test(r.stdout) ? "active" : "inactive";
       },
@@ -15745,7 +16197,7 @@ function serviceManager({ platform = process.platform, home = homedir9(), env = 
       },
       restart: (port) => run("launchctl", ["kickstart", "-k", target(port)]).status === 0,
       uninstall(port) {
-        if (!existsSync7(plist(port))) return { ok: true, noop: true };
+        if (!existsSync8(plist(port))) return { ok: true, noop: true };
         run("launchctl", ["bootout", target(port)]);
         rmSync3(plist(port), { force: true });
         return { ok: true };
@@ -16161,12 +16613,12 @@ OpenCode's own data stays: ${sessions.dir} (sessions, saved logins) and its sett
 }
 
 // tools/witbitz-code.mjs
-import { readFileSync as readFileSync9, existsSync as existsSync8, mkdirSync as mkdirSync7, rmSync as rmSync4, readdirSync as readdirSync4, readlinkSync, realpathSync as realpathSync4, rmdirSync as rmdirSync2, accessSync as accessSync2, writeFileSync as writeFileSync8, copyFileSync as copyFileSync2, constants as fsConstants } from "node:fs";
-import { homedir as homedir10 } from "node:os";
+import { readFileSync as readFileSync9, existsSync as existsSync9, mkdirSync as mkdirSync8, rmSync as rmSync4, readdirSync as readdirSync4, readlinkSync, realpathSync as realpathSync5, rmdirSync as rmdirSync2, accessSync as accessSync2, writeFileSync as writeFileSync8, copyFileSync as copyFileSync2, constants as fsConstants } from "node:fs";
+import { homedir as homedir11 } from "node:os";
 import { join as join8, dirname as dirname4 } from "node:path";
 import { fileURLToPath } from "node:url";
 var VERSION2 = "1.2.0";
-var ENV_PATH2 = process.env.OPENCODE_ENV_FILE || join8(homedir10(), ".opencode-server.env");
+var ENV_PATH2 = process.env.OPENCODE_ENV_FILE || join8(homedir11(), ".opencode-server.env");
 var HELP = `witbitz-code ${VERSION2} \u2014 reach OpenCode on this computer from the Spaces Code section, end-to-end encrypted.
 
   setup [--port <n>] [--name <name>]
@@ -16209,20 +16661,20 @@ function isListening(port) {
 function hasTrustedRouter(env = process.env) {
   if (env.TRUSTEDROUTER_API_KEY) return true;
   try {
-    const auth = JSON.parse(readFileSync9(join8(env.XDG_DATA_HOME || join8(homedir10(), ".local", "share"), "opencode", "auth.json"), "utf8"));
+    const auth = JSON.parse(readFileSync9(join8(env.XDG_DATA_HOME || join8(homedir11(), ".local", "share"), "opencode", "auth.json"), "utf8"));
     return !!(auth && auth.trustedrouter);
   } catch {
     return false;
   }
 }
 var saveTinfoilKey = (key) => {
-  const text = existsSync8(ENV_PATH2) ? readFileSync9(ENV_PATH2, "utf8") : "";
+  const text = existsSync9(ENV_PATH2) ? readFileSync9(ENV_PATH2, "utf8") : "";
   writeSecret(ENV_PATH2, envSet(text, "TINFOIL_API_KEY", key));
 };
 var saveTrustedRouterKey = (key) => {
   const file = authPath();
-  mkdirSync7(dirname4(file), { recursive: true, mode: 448 });
-  writeSecret(file, withAuthKey(existsSync8(file) ? readFileSync9(file, "utf8") : "", "trustedrouter", key));
+  mkdirSync8(dirname4(file), { recursive: true, mode: 448 });
+  writeSecret(file, withAuthKey(existsSync9(file) ? readFileSync9(file, "utf8") : "", "trustedrouter", key));
 };
 async function setKey({ label, check, save, where, after }) {
   const key = await readLine(`${label} API key (it shows as *****): `, { hidden: true });
@@ -16262,7 +16714,7 @@ async function serve(args) {
       console.error("  npm install -g opencode-ai        or        curl -fsSL https://opencode.ai/install | bash");
       process.exit(1);
     }
-    const password = existsSync8(ENV_PATH2) ? parseEnvPassword(readFileSync9(ENV_PATH2, "utf8")) : "";
+    const password = existsSync9(ENV_PATH2) ? parseEnvPassword(readFileSync9(ENV_PATH2, "utf8")) : "";
     console.error(`witbitz-code: starting OpenCode on 127.0.0.1:${port}`);
     const content = mergeConfig(policyConfig(), hasTrustedRouter() ? proxyConfig(proxyPortFor(port)) : {});
     const env = { ...process.env, ...password ? { OPENCODE_SERVER_PASSWORD: password } : {}, OPENCODE_CONFIG_CONTENT: JSON.stringify(content) };
@@ -16312,8 +16764,8 @@ var portArg = (args) => {
 function findOpenCode() {
   const found = spawnSync2(process.platform === "win32" ? "where" : "which", ["opencode"], { encoding: "utf8" });
   if (found.status === 0 && found.stdout.trim()) return found.stdout.trim().split(/\r?\n/)[0];
-  const own = join8(homedir10(), ".opencode", "bin", "opencode");
-  if (existsSync8(own)) {
+  const own = join8(homedir11(), ".opencode", "bin", "opencode");
+  if (existsSync9(own)) {
     process.env.PATH = `${dirname4(own)}:${process.env.PATH || ""}`;
     return own;
   }
@@ -16400,7 +16852,7 @@ async function stopProcess(pid) {
 }
 function portOwners(port) {
   const hits = [];
-  if (existsSync8("/proc/net/tcp")) {
+  if (existsSync9("/proc/net/tcp")) {
     const inodes = /* @__PURE__ */ new Set();
     for (const f of ["/proc/net/tcp", "/proc/net/tcp6"]) {
       let text = "";
@@ -16450,7 +16902,7 @@ function portOwners(port) {
 }
 function openCodeHolders(dir) {
   const hits = [];
-  if (existsSync8("/proc/self/fd")) {
+  if (existsSync9("/proc/self/fd")) {
     for (const p of readdirSync4("/proc")) {
       if (!/^\d+$/.test(p) || Number(p) === process.pid) continue;
       let fds;
@@ -16477,7 +16929,7 @@ function openCodeHolders(dir) {
     }
     return hits;
   }
-  const files = ["opencode.db", "opencode.db-wal", "opencode.db-shm"].map((f) => join8(dir, f)).filter((f) => existsSync8(f));
+  const files = ["opencode.db", "opencode.db-wal", "opencode.db-shm"].map((f) => join8(dir, f)).filter((f) => existsSync9(f));
   if (!files.length) return hits;
   const r = spawnSync2("lsof", ["-t", "--", ...files], { encoding: "utf8" });
   for (const pid of new Set(String(r.stdout || "").split(/\s+/).filter(Boolean).map(Number))) {
@@ -16494,7 +16946,7 @@ function openCodeInstallPlans() {
     let writable = false;
     try {
       if (root) {
-        accessSync2(existsSync8(root) ? root : dirname4(root), fsConstants.W_OK);
+        accessSync2(existsSync9(root) ? root : dirname4(root), fsConstants.W_OK);
         writable = true;
       }
     } catch {
@@ -16508,10 +16960,10 @@ function openCodeHere() {
   const path = findOpenCode();
   let real = path;
   try {
-    real = path ? realpathSync4(path) : "";
+    real = path ? realpathSync5(path) : "";
   } catch {
   }
-  const info = openCodeInstall({ path, real, home: homedir10() });
+  const info = openCodeInstall({ path, real, home: homedir11() });
   let npmNeedsSudo = false;
   if (info.kind === "npm") {
     const root = String(spawnSync2("npm", ["root", "-g"], { encoding: "utf8" }).stdout || "").trim();
@@ -16527,7 +16979,7 @@ async function removeOpenCodeProgram(info) {
   const said = [];
   if (info.kind === "installer") {
     rmSync4(info.dir, { recursive: true, force: true });
-    for (const f of shellStartupFiles(homedir10(), process.env)) {
+    for (const f of shellStartupFiles(homedir11(), process.env)) {
       let text;
       try {
         text = readFileSync9(f, "utf8");
@@ -16546,7 +16998,7 @@ async function removeOpenCodeProgram(info) {
   } else if (info.kind === "brew") {
     spawnSync2("brew", ["uninstall", "opencode"], { stdio: "inherit" });
   } else return { ok: false, why: "unknown install", said };
-  return existsSync8(info.path) ? { ok: false, why: `${info.path} is still there`, said } : { ok: true, said };
+  return existsSync9(info.path) ? { ok: false, why: `${info.path} is still there`, said } : { ok: true, said };
 }
 async function uninstall(args) {
   const yes2 = args.includes("--yes");
@@ -16554,7 +17006,7 @@ async function uninstall(args) {
     console.error("witbitz-code: uninstall asks before it removes anything \u2014 run it in a terminal, or pass --yes");
     process.exit(2);
   }
-  const codeDir = join8(homedir10(), ".witbitz", "code");
+  const codeDir = join8(homedir11(), ".witbitz", "code");
   const self = fileURLToPath(import.meta.url);
   const authFile = authPath();
   const hasTR = () => {
@@ -16578,27 +17030,28 @@ async function uninstall(args) {
     // the downloaded file deletes itself; run from the repository, the source stays
     script: true ? self : "",
     // saved keys only — a key that lives in the shell's environment is not this tool's to remove
-    hasKeys: () => [...existsSync8(ENV_PATH2) && /^\s*(?:export\s+)?TINFOIL_API_KEY=/m.test(readFileSync9(ENV_PATH2, "utf8")) ? ["Tinfoil key"] : [], ...hasTR() ? ["TrustedRouter key (in OpenCode's credentials)"] : []],
+    hasKeys: () => [...existsSync9(ENV_PATH2) && /^\s*(?:export\s+)?TINFOIL_API_KEY=/m.test(readFileSync9(ENV_PATH2, "utf8")) ? ["Tinfoil key"] : [], ...hasTR() ? ["TrustedRouter key (in OpenCode's credentials)"] : []],
     deleteKeys: () => {
-      if (existsSync8(ENV_PATH2)) writeSecret(ENV_PATH2, withoutEnvKeys(readFileSync9(ENV_PATH2, "utf8"), ["TINFOIL_API_KEY"]));
+      if (existsSync9(ENV_PATH2)) writeSecret(ENV_PATH2, withoutEnvKeys(readFileSync9(ENV_PATH2, "utf8"), ["TINFOIL_API_KEY"]));
       if (hasTR()) writeSecret(authFile, withoutAuthKey(readFileSync9(authFile, "utf8"), "trustedrouter"));
     },
     removePath: (path) => rmSync4(path, { recursive: true, force: true }),
-    // project notes: the folder the witbitz-notes plugin writes, and the plugin files tools/opencode-config.mjs installs
+    // project notes: the folder the witbitz-notes plugin writes, and the plugin files tools/opencode-config.mjs installs (the
+    // progress plugin with them — it keeps nothing of its own)
     notes: () => {
-      const root = process.env.WITBITZ_NOTES_DIR || join8(homedir10(), ".local", "share", "witbitz-notes");
-      const cfg = join8(process.env.XDG_CONFIG_HOME || join8(homedir10(), ".config"), "opencode");
+      const root = process.env.WITBITZ_NOTES_DIR || join8(homedir11(), ".local", "share", "witbitz-notes");
+      const cfg = join8(process.env.XDG_CONFIG_HOME || join8(homedir11(), ".config"), "opencode");
       let folders = 0;
       try {
         folders = readdirSync4(root, { withFileTypes: true }).filter((e) => e.isDirectory()).length;
       } catch {
       }
-      return { root, folders, pluginFiles: [join8(cfg, "plugins", "witbitz-notes.js"), join8(cfg, "commands", "notes-init.md"), join8(cfg, "witbitz-confidential-models.json")].filter((f) => existsSync8(f)) };
+      return { root, folders, pluginFiles: [join8(cfg, "plugins", "witbitz-notes.js"), join8(cfg, "plugins", "witbitz-progress.js"), join8(cfg, "commands", "notes-init.md"), join8(cfg, "witbitz-confidential-models.json")].filter((f) => existsSync9(f)) };
     },
     // OpenCode's sessions: its whole data folder except auth.json (the provider logins)
     sessions: () => {
       const dir = dirname4(authFile);
-      return { dir, exists: existsSync8(dir) && readdirSync4(dir).some((f) => f !== "auth.json") };
+      return { dir, exists: existsSync9(dir) && readdirSync4(dir).some((f) => f !== "auth.json") };
     },
     deleteSessions: () => {
       const dir = dirname4(authFile);
@@ -16611,7 +17064,7 @@ async function uninstall(args) {
     stopProcess
   });
   if (r.done) try {
-    rmdirSync2(join8(homedir10(), ".witbitz"));
+    rmdirSync2(join8(homedir11(), ".witbitz"));
   } catch {
   }
   if (r.done && !r.left && PAIRINGS_PATH2 !== join8(codeDir, "pairings.json")) rmSync4(PAIRINGS_PATH2, { force: true });

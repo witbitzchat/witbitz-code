@@ -33,7 +33,8 @@ verdicts are sealed as signed turns (`tools/rc-verdict-ledger.mjs`). This design
 ## 2. The flow (connector, per pairing)
 
 ```
-permission asked (GET /permission?directory=D, polled ~1 s for each directory with an Auto session)
+permission asked (GET /permission?directory=D, polled ~1 s for each directory with an Auto session — when OpenCode's
+  │  list breaks, the asks the connector followed on /global/event instead: tools/code-asks.mjs)
   │  not an Auto session → ignore (the phone card handles it)
   ▼
 ① deterministic HARD DENY   catastrophic, never context-dependent (rm -rf / ~ $HOME, mkfs, dd to a device, fork bomb…)

@@ -357,13 +357,14 @@ async function uninstall(args) {
       if (hasTR()) writeSecret(authFile, withoutAuthKey(readFileSync(authFile, 'utf8'), 'trustedrouter'))
     },
     removePath: (path) => rmSync(path, { recursive: true, force: true }),
-    // project notes: the folder the witbitz-notes plugin writes, and the plugin files tools/opencode-config.mjs installs
+    // project notes: the folder the witbitz-notes plugin writes, and the plugin files tools/opencode-config.mjs installs (the
+    // progress plugin with them — it keeps nothing of its own)
     notes: () => {
       const root = process.env.WITBITZ_NOTES_DIR || join(homedir(), '.local', 'share', 'witbitz-notes')
       const cfg = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode')
       let folders = 0
       try { folders = readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()).length } catch { /* none */ }
-      return { root, folders, pluginFiles: [join(cfg, 'plugins', 'witbitz-notes.js'), join(cfg, 'commands', 'notes-init.md'), join(cfg, 'witbitz-confidential-models.json')].filter((f) => existsSync(f)) }
+      return { root, folders, pluginFiles: [join(cfg, 'plugins', 'witbitz-notes.js'), join(cfg, 'plugins', 'witbitz-progress.js'), join(cfg, 'commands', 'notes-init.md'), join(cfg, 'witbitz-confidential-models.json')].filter((f) => existsSync(f)) }
     },
     // OpenCode's sessions: its whole data folder except auth.json (the provider logins)
     sessions: () => { const dir = dirname(authFile); return { dir, exists: existsSync(dir) && readdirSync(dir).some((f) => f !== 'auth.json') } },

@@ -160,7 +160,8 @@ export function mapEvent(ev, sessionID = '', roles = null, partTypes = null) {
       callID: (p.tool && p.tool.callID) || '',
     }]
   }
-  if (type === 'permission.replied') return [{ kind: 'settled', id: p.id }]
+  // The answered ask's id rides as `requestID` (measured, 1.18.30) — reading `id` left a card answered elsewhere on screen.
+  if (type === 'permission.replied') { const id = p.requestID || p.id; return id ? [{ kind: 'settled', id: String(id) }] : [] }
   // The agent's question tool (codeQuestions.js has the measured wire). Only the v1 events fire on this stream.
   if (type === 'question.asked') {
     const q = normQuestionRequest(p)

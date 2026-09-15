@@ -120,7 +120,7 @@ class PyClient:
 # ── the two connectors behind one interface ───────────────────────────────────────────────────────────────────────────
 class PyConnector:
     OPTION_NAMES = {"maxSenders": "max_senders", "maxResponseBytes": "max_response_bytes", "autoDir": "auto_dir", "autoPollMs": "auto_poll_ms",
-                    "attachRoot": "attach_root", "attachMaxFileBytes": "attach_max_file_bytes"}
+                    "attachRoot": "attach_root", "attachMaxFileBytes": "attach_max_file_bytes", "asksReconcileMs": "asks_reconcile_ms"}
 
     def __init__(self, rig, timeout_ms, **options):
         self.rig, self.timeout_ms, self.c = rig, timeout_ms, None
@@ -174,7 +174,7 @@ async def conformance(rig: Rig, connector) -> None:
         await client.start()
         hello = client.hellos()[-1]
         assert set(hello) == {"t", "ver", "name", "computerId", "k", "ts", "caps", "auto"} and hello["ver"] == "1"
-        assert (hello["caps"], hello["auto"]) == (["auto", "attachments", "outputs", "tools", "seen"], []), "both connectors do Auto mode (test_auto.py), save attachments, serve produced files and share what was seen"
+        assert (hello["caps"], hello["auto"]) == (["auto", "attachments", "outputs", "tools", "seen", "asks", "folders"], []), "both connectors do Auto mode (test_auto.py), save attachments, serve produced files, share what was seen, keep what is waiting (test_asks.py) and allow a folder (test_folders.py)"
         assert (hello["name"], hello["computerId"]) == ("test-box", "cmp_test") and isinstance(hello["ts"], int)
         assert re.fullmatch(r"[A-Za-z0-9_-]{24}", hello["k"]), "18 random bytes, base64url"
 

@@ -11,11 +11,11 @@ const ctx = { directory: V.directory, home: V.home }
 
 for (const c of V.cases) {
   test(`deterministic: ${c.name} → ${c.stage}`, () => {
-    const r = classifyDeterministic({ id: 'per_x', sessionID: 'ses_x', always: [], ...c.req }, ctx)
+    const r = classifyDeterministic({ id: 'per_x', sessionID: 'ses_x', always: [], ...c.req }, { ...ctx, folders: c.folders || [] })
     const stage = r ? r.stage : 'review'
     assert.equal(stage, c.stage)
     if (r) {
-      assert.equal(r.decision, r.stage === 'hard-deny' ? 'deny' : 'allow')
+      assert.equal(r.decision, { 'hard-deny': 'deny', 'fast-ask': 'ask' }[r.stage] || 'allow')
       assert.ok(r.rule && typeof r.rule === 'string', 'every automatic decision names its rule')
     }
     if (r && r.stage === 'hard-deny') assert.ok(r.reason.length > 10, 'a refusal tells the agent why')

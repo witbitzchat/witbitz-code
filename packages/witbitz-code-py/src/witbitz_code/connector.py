@@ -31,6 +31,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from . import _js
+from .asks import ASK_FRAME, AskBook
+from .folders import FOLDER_ROUTE, folder_route
 from .attachments import (ATTACHMENT_ROUTE, MAX_FILE_BYTES, attachment_rule, default_root, prune_attachments,
                           remove_session_attachments, serve_attachment, stage_message_body)
 from .auto_runner import AutoRunner
@@ -45,9 +47,11 @@ REQUEST_TIMEOUT_MS = 30_000
 HELLO_EVERY_S = 20.0  # the page counts the computer online while a hello arrived in the last 30 s
 SUB_TTL_S = 75.0  # a page re-subscribes every 30 s; a client that stops renewing is dropped
 SWEEP_EVERY_S = 15.0
+ASKS_RECONCILE_MS = 30_000  # how often recorded asks are checked against which sessions still run (asks.py)
 MAX_RESPONSE = 30 * 1024 * 1024  # bytes; below the page's 32 MiB reassembly cap: refuse while reading, not by a timeout
 START_HINT = "witbitz-code serve"
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")  # an HTTP method fetch() would accept
+_URI_SAFE = "-_.!~*'()"  # encodeURIComponent
 
 
 def default_auto_dir() -> Path:
@@ -145,8 +149,18 @@ class PairingServer:
     def __init__(self, pairing: dict, *, client: httpx.AsyncClient, flush_ms: float, log: Callable[[str], Any],
                  connect: Connect | None = None, request_timeout_ms: float = REQUEST_TIMEOUT_MS, max_senders: int = 64,
                  max_response_bytes: int = MAX_RESPONSE, auto_dir: Path | None = None, auto_poll_ms: float = 1000,
-                 attach_root: Path | None = None, attach_max_file_bytes: int = MAX_FILE_BYTES) -> None:
+                 attach_root: Path | None = None, attach_max_file_bytes: int = MAX_FILE_BYTES,
+                 asks_reconcile_ms: float = ASKS_RECONCILE_MS) -> None:
         self.pairing = pairing
+        # WHAT IS WAITING (asks.py): OpenCode's GET /permission breaks for a whole folder on one malformed ask and keeps a
+        # stopped turn's asks — every folder's asks are followed on /global/event, for Auto and for the page's card recovery.
+        self._asks = AskBook()
+        self._asks_live = False
+        self._asks_epoch = 0  # one per connection of the stream
+        self._asks_complete: dict[str, int] = {}  # directory → the epoch its whole list was read in: the book knows every ask since
+        self._asks_tried: dict[str, float] = {}  # directory → when a whole read was last tried for a folder not known in full
+        self._asks_suspects: dict[str, set[str]] = {}  # directory → ask ids whose session was not running at the last check
+        self._asks_reconcile_s = asks_reconcile_ms / 1000
         # Attachments, the Claude Code way (docs/code-attachments.md): files a turn carries are saved here, per session.
         self._attach_root = Path(attach_root) if attach_root else default_root()
         self._attach_max = attach_max_file_bytes
@@ -181,12 +195,15 @@ class PairingServer:
         self._seen: dict | None = None
         self.auto = AutoRunner(base=self.base, auth=self._auth, client=client, poll_ms=auto_poll_ms, log=log,
                                state_path=auto_dir / f"auto-{safe_id}.json", log_path=auto_dir / "auto-log.jsonl",
-                               on_verdict=lambda v: self.peer.send({"t": "autoverdict", **v, "ts": int(time.time() * 1000)}))
+                               on_verdict=lambda v: self.peer.send({"t": "autoverdict", **v, "ts": int(time.time() * 1000)}),
+                               list_asks=self._pending_asks)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────────────────────────────────────────────
     async def start(self) -> None:
         self._spawn(self._every(SWEEP_EVERY_S, self._sweep))
         self._spawn(self._every(HELLO_EVERY_S, lambda: self.hello() if self.peer.peers >= 2 else None))
+        self._spawn(self._watch_asks())
+        self._spawn(self._every(self._asks_reconcile_s, lambda: self._spawn(self._reconcile_asks()) if self._asks_live else None))
         self.auto.start()
         await self.peer.start()
 
@@ -252,7 +269,7 @@ class PairingServer:
             return None  # no hello before this socket has its nonce
         # caps: what this connector can do beyond the requests — a page shows the Auto switch only when `auto` is here.
         return self.peer.send({"t": "hello", "ver": VERSION, "name": self.name, "computerId": self.pairing.get("computerId") or "",
-                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto", "attachments", "outputs", "tools", "seen"], "auto": self.auto.sessions()})
+                               "k": self.nonce, "ts": int(time.time() * 1000), "caps": ["auto", "attachments", "outputs", "tools", "seen", "asks", "folders"], "auto": self.auto.sessions()})
 
     def _auth(self) -> dict:
         pw = self.pairing.get("password") or read_env_password(Path(self.pairing["envFile"]) if self.pairing.get("envFile") else None)
@@ -354,9 +371,24 @@ class PairingServer:
                 self._save_seen()
             await reply(200, merged)
             return
+        # "ALLOW THIS FOLDER" (folders.py): the folder a waiting outside-the-project ask belongs to, and allowing it for the
+        # conversation. Answered HERE; the folder comes from the ask and the disk, never from the page.
+        if bare == FOLDER_ROUTE and m.get("m") in ("GET", "POST"):
+            st, b = await folder_route(method=m["m"], query=query, body=m.get("b"), pending=self._pending_asks, call=self._opencode_json,
+                                       log=lambda line: self._log(f"opencode-connector: {self.name} · {line}"))
+            await reply(st, b)
+            return
         if not allowed_request(m.get("m"), m.get("p")):
             await reply(403, {"error": "not allowed by the connector"})
             return
+        # What is still waiting (the page's card recovery): OpenCode's list when it can give one, else the asks its event
+        # stream carried (asks.py). None: forwarded as before.
+        if m.get("m") == "GET" and bare == "/permission":
+            directory = urllib.parse.parse_qs(query).get("directory", [""])[0]
+            pending = await self._pending_asks(directory) if directory else None
+            if pending is not None:
+                await reply(200, pending)
+                return
         method, path, body = m["m"], m["p"], m.get("b")
         # ATTACHMENTS: the files a turn carries are saved on this computer and the message names them.
         turn_of = re.fullmatch(r"/session/([^/]+)/message", bare) if method == "POST" else None
@@ -502,6 +534,122 @@ class PairingServer:
             parts.append(dec.decode(b"", final=True))
             return r.status_code, "".join(parts)
 
+    # ── what is waiting (asks.py) ─────────────────────────────────────────────────────────────────────────────────────
+    async def _opencode(self, method: str, path: str, directory: str, body: Any = None) -> tuple[int, str]:
+        url = f"{self.base}{path}{'&' if '?' in path else '?'}directory={urllib.parse.quote(directory, safe=_URI_SAFE)}"
+        headers = {**self._auth(), **({"content-type": "application/json"} if body is not None else {})}
+        r = await asyncio.wait_for(self._client.request(method, url, headers=headers, content=_js.utf8(_js.stringify(body)) if body is not None else None),
+                                   self._timeout_ms / 1000)
+        return r.status_code, r.text
+
+    async def _opencode_json(self, method: str, path: str, directory: str, body: Any = None) -> tuple[bool, int, Any]:
+        status, text = await self._opencode(method, path, directory, body)
+        try:
+            data = _js.parse(text)
+        except ValueError:
+            data = None
+        return 200 <= status < 300, status, data
+
+    async def _settle_dead(self, dead: list[tuple[str, dict]]) -> None:
+        """Reply to asks whose turn was stopped: OpenCode keeps them otherwise, and one broken ask keeps its folder's list broken."""
+        for directory, ask in dead:
+            try:
+                status, _ = await self._opencode("POST", f"/permission/{urllib.parse.quote(ask['id'], safe=_URI_SAFE)}/reply", directory, {"reply": "reject"})
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue  # OpenCode restarting: the ask went with it
+            if 200 <= status < 300:
+                self._log(f"opencode-connector: {self.name} · cleared a {ask.get('permission') or 'permission'} approval a stopped turn left waiting")
+
+    async def _pending_asks(self, directory: str) -> list | None:
+        """OpenCode's list of waiting asks in a folder; the recorded ones when that list fails; None when neither can say.
+        The book answers only for a folder it has followed since a whole read, on the same connection: an ask from before
+        that is unknown to it, and a list missing it would read as "answered" (the page drops the card, Auto a refusal)."""
+        epoch = self._asks_epoch if self._asks_live else -1
+        try:
+            status, text = await self._opencode("GET", "/permission", directory)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None  # OpenCode is not answering
+        try:
+            data = _js.parse(text)
+        except ValueError:
+            data = None
+        if 200 <= status < 300 and isinstance(data, list):
+            self._asks.merge(directory, data)
+            if epoch >= 0 and self._asks_live and self._asks_epoch == epoch:
+                self._asks_complete[directory] = epoch
+            return data
+        return self._asks.list(directory) if self._asks_live and self._asks_complete.get(directory) == self._asks_epoch else None
+
+    def _learn_folder(self, directory: str) -> None:
+        """A folder with activity whose list the book does not know in full: read it now, while no broken ask is in it yet."""
+        if not directory or self._asks_complete.get(directory) == self._asks_epoch or time.monotonic() - self._asks_tried.get(directory, -math.inf) < 5:
+            return
+        self._asks_tried[directory] = time.monotonic()
+        self._spawn(self._pending_asks(directory))
+
+    async def _reconcile_asks(self) -> None:
+        """Asks whose session is not running at TWO checks in a row are dead (a stop the stream missed) — one reading never
+        rejects a live ask. A stop the stream saw is settled at once by its idle event."""
+        for directory in self._asks.directories():
+            known = self._asks.list(directory)
+            try:
+                status, text = await self._opencode("GET", "/session/status", directory)
+                data = _js.parse(text) if 200 <= status < 300 else None
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue  # next time
+            if not isinstance(data, dict):
+                continue
+            busy = [sid for sid, v in data.items() if _js.truthy(v) and not (isinstance(v, dict) and v.get("type") == "idle")]
+            before = self._asks_suspects.get(directory, set())
+            not_running = [a["id"] for a in known if a["sessionID"] not in busy]
+            self._asks_suspects[directory] = set(not_running)
+            await self._settle_dead(self._asks.settle_idle(directory, busy, [i for i in not_running if i in before]))
+        for directory in [d for d in self._asks_suspects if d not in self._asks.directories()]:
+            del self._asks_suspects[directory]
+
+    def _on_ask_frame(self, data: str) -> None:
+        if not ASK_FRAME.search(data):
+            return
+        try:
+            frame = _js.parse(data)
+        except ValueError:
+            return
+        dead = self._asks.apply(frame)
+        if dead:
+            self._spawn(self._settle_dead(dead))
+        self._learn_folder(frame.get("directory") if isinstance(frame, dict) and isinstance(frame.get("directory"), str) else "")
+
+    async def _watch_asks(self) -> None:
+        wait = 1.0
+        while not self._stopping:
+            try:
+                headers = {**self._auth(), "accept": "text/event-stream"}
+                async with self._client.stream("GET", self.base + "/global/event", headers=headers) as r:
+                    if not 200 <= r.status_code < 300 or "event-stream" not in r.headers.get("content-type", ""):
+                        raise RuntimeError(f"global event stream {r.status_code}")
+                    self._asks_epoch += 1
+                    self._asks_live = True
+                    wait = 1.0
+                    self._spawn(self._reconcile_asks())  # a turn stopped while the stream was down
+                    feed = sse_reader(self._on_ask_frame)
+                    dec = codecs.getincrementaldecoder("utf-8-sig")("replace")
+                    async for chunk in r.aiter_bytes():
+                        feed(dec.decode(chunk))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass  # OpenCode restarted, or is not running yet, or has no /global/event
+            finally:
+                self._asks_live = False
+            await asyncio.sleep(wait)
+            wait = min(wait * 2, 30.0)
+
     # ── events ────────────────────────────────────────────────────────────────────────────────────────────────────────
     # One OpenCode stream per path, shared by every device watching it; each device (its client id `c`) renews its own
     # interest, so one device leaving never closes the stream another is still reading.
@@ -612,7 +760,8 @@ async def start_connector(pairings: list[dict], *, flush_ms: float = 120, log: C
                           client: httpx.AsyncClient | None = None, connect: Connect | None = None,
                           request_timeout_ms: float = REQUEST_TIMEOUT_MS, max_senders: int = 64,
                           max_response_bytes: int = MAX_RESPONSE, auto_dir: Path | None = None, auto_poll_ms: float = 1000,
-                          attach_root: Path | None = None, attach_max_file_bytes: int = MAX_FILE_BYTES) -> Connector:
+                          attach_root: Path | None = None, attach_max_file_bytes: int = MAX_FILE_BYTES,
+                          asks_reconcile_ms: float = ASKS_RECONCILE_MS) -> Connector:
     """Serve the given pairings until stop()/aclose(). Options exist for tests: flush_ms, log, client, connect,
     request_timeout_ms, max_senders, max_response_bytes, auto_dir, auto_poll_ms."""
     client = client or local_client()
@@ -626,7 +775,7 @@ async def start_connector(pairings: list[dict], *, flush_ms: float = 120, log: C
     for p in pairings:
         s = PairingServer(p, client=client, flush_ms=flush_ms, log=log, connect=connect, request_timeout_ms=request_timeout_ms,
                           max_senders=max_senders, max_response_bytes=max_response_bytes, auto_dir=auto_dir, auto_poll_ms=auto_poll_ms,
-                          attach_root=attach_root, attach_max_file_bytes=attach_max_file_bytes)
+                          attach_root=attach_root, attach_max_file_bytes=attach_max_file_bytes, asks_reconcile_ms=asks_reconcile_ms)
         await s.start()
         servers.append(s)
     return Connector(servers, client)

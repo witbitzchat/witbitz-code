@@ -1,6 +1,7 @@
 """Code Auto mode's loop inside the connector — tools/code-auto-runner.mjs, in Python (docs/code-auto-mode.md §2).
 
-For each session switched to Auto it polls OpenCode's pending permission asks (GET /permission?directory=…), and for each
+For each session switched to Auto it polls OpenCode's pending permission asks (GET /permission?directory=…, or the
+connector's `list_asks` — which falls back to the asks the event stream carried when that list breaks), and for each
 new one: the deterministic layer (auto.py) answers what needs no model; otherwise the SESSION'S OWN model reviews it in a
 throw-away session whose rules deny every tool. Only a clear allow is answered `once`, a deny is answered `reject` with the
 reason for the agent, and everything else — ask, nonsense, a severe allow, a timeout, any error — is LEFT for the person's
@@ -23,7 +24,7 @@ import os
 import re
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -31,6 +32,7 @@ from urllib.parse import quote
 import httpx
 
 from . import _js
+from .folders import allowed_folders
 from .auto import SCRATCH_DIR, action_for, classify_deterministic, log_record, parse_verdict, reviewer_prompt, scratch_paths
 from .policy import SUBAGENT_GATED
 
@@ -107,7 +109,8 @@ class AutoRunner:
     def __init__(self, *, base: str, auth: Callable[[], dict], client: httpx.AsyncClient, state_path: Path | None,
                  log_path: Path | None, poll_ms: float = 1000, review_timeout_ms: float = 30_000, home: str | None = None,
                  on_verdict: Callable[[dict], Any] = lambda v: None, log: Callable[[str], Any] = lambda m: None,
-                 now: Callable[[], int] = _now_ms, scratch_check: Callable[[list[str]], bool] = scratch_on_disk) -> None:
+                 now: Callable[[], int] = _now_ms, scratch_check: Callable[[list[str]], bool] = scratch_on_disk,
+                 list_asks: Callable[[str], Awaitable[list | None]] | None = None) -> None:
         self._root = re.sub(r"/+\Z", "", base or "")
         self._auth = auth
         self._client = client
@@ -120,6 +123,7 @@ class AutoRunner:
         self._log = log
         self._now = now
         self._scratch_check = scratch_check
+        self._list_asks = list_asks
         self._auto: dict[str, dict] = {}  # sessionID → {dir, at}
         self._handled: dict[str, int] = {}  # permission id → when it was taken up (so a poll never reviews it twice)
         self._parents: dict[str, dict] = {}  # sessionID → {parent, at} — so a subagent's ask finds its Auto session
@@ -273,7 +277,17 @@ class AutoRunner:
                     "reason": f"the {name} agent's own commands would run without asking — start it yourself if you trust it"}
         return None
 
-    async def _review(self, req: dict, directory: str, owner: str | None = None) -> tuple[dict | None, str, str]:
+    async def _folders_of(self, sid: str, directory: str) -> list[str]:
+        """The folders the person allowed for the session that asked ("allow this folder") — they count as the project."""
+        try:
+            ok, _, data = await self._call("GET", f"/session/{_uri_component(sid)}", directory)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return []
+        return allowed_folders(data.get("permission")) if ok and isinstance(data, dict) else []
+
+    async def _review(self, req: dict, directory: str, owner: str | None = None, folders: list[str] | None = None) -> tuple[dict | None, str, str]:
         model, user_messages, tools = await self._session_context(owner or req["sessionID"], directory)
         if not model:
             return None, "", "the session has no model to review with yet"
@@ -281,7 +295,7 @@ class AutoRunner:
         # A subagent's ask names a call in ITS transcript, not the owner's: then there is no tool line, as before.
         call = req.get("tool") if isinstance(req.get("tool"), dict) else {}
         tool = tools.get(call["callID"], "") if isinstance(call.get("callID"), str) else ""
-        prompt = reviewer_prompt(req, directory, user_messages, tool)
+        prompt = reviewer_prompt(req, directory, user_messages, tool, folders or [])
         _, _, created = await self._call("POST", "/session", directory,
                                          {"title": REVIEW_TITLE, "permission": [{"permission": "*", "pattern": "*", "action": "deny"}]})
         rid = created.get("id") if isinstance(created, dict) else None
@@ -327,7 +341,8 @@ class AutoRunner:
 
     async def _decide(self, req: dict, directory: str, owner: str | None = None) -> None:
         t0 = self._now()
-        det = classify_deterministic(req, directory=directory, home=self._home)
+        folders = await self._folders_of(req["sessionID"], directory)
+        det = classify_deterministic(req, directory=directory, home=self._home, folders=folders)
         if det and det["rule"] == "fast:agent-scratch" and not self._scratch_check(scratch_paths(req)):
             det = None  # the disk disagrees: the reviewer's
         det = det or await self._classify_subagent(req, directory)
@@ -338,7 +353,7 @@ class AutoRunner:
             verdict = {"decision": det["decision"], "severity": severity, "rule": det["rule"], "reason": det["reason"]}
         else:
             stage = "reviewer"
-            verdict, model, note = await self._review(req, directory, owner)
+            verdict, model, note = await self._review(req, directory, owner, folders)
         action = det["decision"] if det else action_for(verdict)
         reason_given = (verdict or {}).get("reason") or ""
         rec = log_record(req=req, stage=stage, verdict=verdict, action=action, model=model, ms=self._now() - t0, at=t0)
@@ -379,6 +394,17 @@ class AutoRunner:
                 self._held.pop(sid, None)
 
     # ── the loop ──────────────────────────────────────────────────────────────────────────────────────────────────────
+    async def _pending(self, directory: str) -> list | None:
+        try:
+            if self._list_asks is not None:
+                return await self._list_asks(directory)
+            ok, _, data = await self._call("GET", "/permission", directory)
+            return data if ok and isinstance(data, list) else None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+
     async def _poll(self) -> None:
         if self._stopped or not self._auto:
             return
@@ -387,13 +413,11 @@ class AutoRunner:
             if at < cutoff:
                 del self._handled[pid]
         for directory in dict.fromkeys(v["dir"] for v in self._auto.values()):
-            try:
-                _, _, data = await self._call("GET", "/permission", directory)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                continue  # OpenCode restarting
-            pending = data if isinstance(data, list) else []
+            # None = nobody can say what is waiting (OpenCode restarting, or its list broken with no events to go on): skip the
+            # folder. Taken as "nothing is waiting", it would drop every held refusal as answered elsewhere.
+            pending = await self._pending(directory)
+            if pending is None:
+                continue
             for req in pending:
                 if not isinstance(req, dict) or not isinstance(req.get("id"), str) or req["id"] in self._handled:
                     continue

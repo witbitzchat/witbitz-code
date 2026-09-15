@@ -149,7 +149,7 @@ test('anything outside the allowlist is refused with 403 and never reaches OpenC
     const r = await call(m, p)
     assert.equal(r.st, 403, `${m} ${p}`)
   }
-  assert.equal(oc.seen.filter((s) => /shell|file\/content|event/.test(s.url || '')).length, 0)
+  assert.equal(oc.seen.filter((s) => /shell|file\/content|^\/event/.test(s.url || '')).length, 0) // (/global/event is the connector's own watch — tools/code-asks.mjs)
 })
 
 test('a response larger than one frame arrives whole', async (t) => {
@@ -480,4 +480,25 @@ test('NOTES: without the plugin installed the connector adds nothing', async (t)
   const { call, oc } = await rig(t, { connectorOptions: { notesRoot: '/n', notesPluginPath: '/nonexistent/witbitz-notes.js' } })
   await call('POST', '/session/ses_notes/message', { parts: [{ type: 'text', text: 'hi' }] })
   assert.equal(oc.seen.some((s) => s.method === 'PATCH' || (s.method === 'GET' && s.url.split('?')[0] === '/session/ses_notes')), false)
+})
+
+// ── new folder (tools/code-mkdir.mjs, spaces/public/codeMkdir.js) ──────────────────────────────────────────────────────
+test('MKDIR: the connector makes a folder under the home and never forwards the route to OpenCode', async (t) => {
+  const { mkdtempSync, mkdirSync, statSync, readdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const home = mkdtempSync(join(tmpdir(), 'wb-mk-home-'))
+  mkdirSync(join(home, 'a'))
+  const { call, oc } = await rig(t)
+  const ok = await call('POST', `/witbitz/mkdir?directory=${encodeURIComponent(home)}&path=${encodeURIComponent('a')}`, { name: 'sub' })
+  assert.equal(ok.st, 200)
+  assert.equal(statSync(join(home, 'a', 'sub')).isDirectory(), true)
+  assert.equal(oc.seen.some((s) => s.url.startsWith('/witbitz/mkdir')), false, 'OpenCode never sees the route')
+
+  const bad = await call('POST', `/witbitz/mkdir?directory=${encodeURIComponent(home)}&path=`, { name: '../escape' })
+  assert.notEqual(bad.st, 200)
+  assert.equal(oc.seen.some((s) => s.url.startsWith('/witbitz/mkdir')), false)
+
+  const noName = await call('POST', `/witbitz/mkdir?directory=${encodeURIComponent(home)}`, { nope: 1 })
+  assert.equal(noName.st, 400)
 })

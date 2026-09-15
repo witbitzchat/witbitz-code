@@ -3,8 +3,9 @@
 // The owner, after an agent fixed a PDF and — asked to "upload it here" — answered that a PDF cannot be shown in the chat:
 // "I think the user should automatically see a preview". Its answer had named the file's full path all along.
 //
-// A result is a file the reply WROTE or EDITED (its write/edit tools), or one its ANSWER names — the text after its last
-// step, not the narration between steps (the owner's "something went wrong": notes about a test in /tmp named min.html
+// A result is a file the reply WROTE or EDITED (its write/edit tools), or one its ANSWER names that CHANGED while the reply
+// ran (the page checks the file's time on the computer: a folder listing that named an old gated_temp2.txt is not a result —
+// "I think the rule for showing files is not good") — the text after its last step, not the narration between steps (the owner's "something went wrong": notes about a test in /tmp named min.html
 // and min.pdf, which read as files in the session folder, while the answer's `דוח מסכם.pdf` was taken for a command
 // because it has a space) — never one it only read, never a path in your own prompt. Only kinds a phone can show preview (a PDF's first page, a picture, the first lines of
 // a table or a text); office files, archives and media get a chip with Download; code gets nothing (its diff is in the

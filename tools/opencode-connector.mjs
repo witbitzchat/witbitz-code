@@ -22,20 +22,24 @@ import { ATTACHMENT_ROUTE } from '../spaces/public/codeAttachments.js'
 import { serveOutput } from './code-outputs.mjs' // a file a reply produced, for the page's automatic preview
 import { OUTPUT_ROUTE } from '../spaces/public/codeOutputs.js'
 import { SEEN_ROUTE, normSeen, mergeSeen } from '../spaces/public/codeUnread.js' // what the person has seen, shared by their devices
+import { mkdirIn, MKDIR_ROUTE } from './code-mkdir.mjs' // "new folder" in the New-session picker, answered here — re-exports the page constant
 import { WitbitzNotes } from './opencode-plugins/witbitz-notes.js' // project notes: the connector allows reads of a session's notes folder
 import { probeTools } from './code-tools-probe.mjs' // "Set up this computer": which suggested tools are installed (a PATH lookup)
 import { startAutoRunner } from './code-auto-runner.mjs' // Auto mode: permission asks decided here (docs/code-auto-mode.md)
+import { createAskBook, ASK_FRAME } from './code-asks.mjs' // what is waiting, from the event stream — OpenCode's own list can break
+import { folderRoute, FOLDER_ROUTE } from './code-folders.mjs' // "allow this folder": one card for a whole folder outside the project
 
 export const VERSION = '1'
 export const PAIRINGS_PATH = process.env.WITBITZ_CODE_PAIRINGS || join(homedir(), '.witbitz', 'code', 'pairings.json')
 // What this connector can do beyond the requests, announced in hello. The page shows Auto only when `auto` is here, and
 // tells a computer it runs an older witbitz-code when one of spaces/public/codeUpdate.js CONNECTOR_CAPS is missing.
-const CAPS = ['auto', 'attachments', 'outputs', 'tools', 'seen']
+const CAPS = ['auto', 'attachments', 'outputs', 'tools', 'seen', 'asks', 'folders']
 const AUTO_DIR = process.env.WITBITZ_CODE_AUTO_DIR || join(homedir(), '.witbitz', 'code') // Auto state (per pairing) + the verdict log
 const DEFAULT_ENV = process.env.OPENCODE_ENV_FILE || join(homedir(), '.opencode-server.env')
 const REQUEST_TIMEOUT_MS = 30_000
 const HELLO_EVERY_MS = 20_000 // the page counts the computer online while a hello arrived in the last 30 s
 const SUB_TTL_MS = 75_000 // a page re-subscribes every 30 s; a subscription nobody renews is dropped
+const ASKS_RECONCILE_MS = 30_000 // how often recorded asks are checked against which sessions still run
 const MAX_RESPONSE = 30 * 1024 * 1024 // above the page's 32 MiB reassembly cap: say so at once instead of timing out
 const START_HINT = process.env.WITBITZ_CODE_BUNDLED === '1' ? 'node witbitz-code.mjs serve' : 'bash tools/opencode-serve.sh'
 
@@ -83,10 +87,10 @@ function sseReader(onData) {
  * Serve the given pairings. Returns { stop, peers } — `peers` is one RelayPeer per pairing.
  * Options exist for tests: fetchImpl, WebSocketImpl, flushMs, log.
  */
-export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, toolsProbe = probeTools, caps = CAPS } = {}) {
+export async function startConnector({ pairings, fetchImpl = fetch, WebSocketImpl = globalThis.WebSocket, flushMs = 120, log = console.error, requestTimeoutMs = REQUEST_TIMEOUT_MS, maxSenders = 64, maxResponseBytes = MAX_RESPONSE, autoDir = AUTO_DIR, autoPollMs = 1000, attachRoot = ATTACH_ROOT, readTextFor = tinfoilReaderForKey, attachMaxFileBytes = MAX_FILE_BYTES, notesRoot = WitbitzNotes.helpers.NOTES_ROOT, notesPluginPath = NOTES_PLUGIN, toolsProbe = probeTools, caps = CAPS, asksReconcileMs = ASKS_RECONCILE_MS } = {}) {
   const running = []
   try { const n = pruneAttachments(attachRoot); if (n) log(`opencode-connector: removed ${n} attachment folder(s) untouched for 30 days`) } catch { /* no folder yet */ }
-  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe, caps }))
+  for (const p of pairings) running.push(await servePairing(p, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe, caps, asksReconcileMs }))
   return {
     peers: running.map((r) => r.peer),
     /** What the confidential-model proxy is doing for a session (code-confidential.mjs onProgress), to the phones. */
@@ -106,7 +110,7 @@ function tinfoilReaderForKey() {
   return reader
 }
 
-async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe, caps }) {
+async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, requestTimeoutMs, maxSenders, maxResponseBytes, autoDir, autoPollMs, attachRoot, readTextFor, attachMaxFileBytes, notesRoot, notesPluginPath, toolsProbe, caps, asksReconcileMs }) {
   const name = pairing.name || hostname()
   const base = String(pairing.opencodeUrl || 'http://127.0.0.1:4096').replace(/\/+$/, '')
   const password = () => pairing.password || parseEnvPassword(existsSync(pairing.envFile || DEFAULT_ENV) ? readFileSync(pairing.envFile || DEFAULT_ENV, 'utf8') : '')
@@ -192,7 +196,34 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
       if (merged !== seen) { seen = merged; saveSeen() }
       return reply(200, merged)
     }
+    // "NEW FOLDER" in the New-session picker (tools/code-mkdir.mjs): the page names the home (directory) and the
+    // relative path under it (path) it is already listing, and a single clean leaf name (name). Answered HERE, never
+    // forwarded to OpenCode. It adds no new power: the page could already list a folder there and a session could already
+    // create it; only the realpath containment check below stops a link from smuggling the write out of the root.
+    if (m.m === 'POST' && path === MKDIR_ROUTE) {
+      const u = new URLSearchParams(query)
+      const home = u.get('directory'), rel = u.get('path')
+      if (typeof home !== 'string' || !home) return reply(400, { error: 'no home to create under' })
+      let parsed = null
+      try { parsed = m.b ? JSON.parse(m.b) : null } catch { /* below */ }
+      if (!parsed || typeof parsed !== 'object' || typeof parsed.name !== 'string') return reply(400, { error: 'no folder name' })
+      const out = mkdirIn({ root: home, rel, name: parsed.name })
+      return reply(out.st, out.b)
+    }
+    // "ALLOW THIS FOLDER" (tools/code-folders.mjs): the folder a waiting outside-the-project ask belongs to, and allowing it for
+    // the conversation. Answered HERE; the folder comes from the ask and the disk, never from the page.
+    if (path === FOLDER_ROUTE && (m.m === 'GET' || m.m === 'POST')) {
+      const out = await folderRoute({ method: m.m, query, body: m.b, pending: pendingAsks, call: opencodeJson, log: (l) => log(`opencode-connector: ${name} · ${l}`) })
+      return reply(out.st, out.b)
+    }
     if (!allowedRequest(m.m, m.p)) return reply(403, { error: 'not allowed by the connector' })
+    // What is still waiting (the page's card recovery): OpenCode's list when it can give one, else the asks its event stream
+    // carried (tools/code-asks.mjs — one malformed ask breaks OpenCode's list for the whole folder). null: forwarded as before.
+    if (m.m === 'GET' && path === '/permission') {
+      const dir = new URLSearchParams(query).get('directory')
+      const list = dir ? await pendingAsks(dir) : null
+      if (list) return reply(200, list)
+    }
     // ATTACHMENTS (docs/code-attachments.md): the files a turn carries are saved on this computer and the message names them.
     let body = typeof m.b === 'string' ? m.b : undefined
     const turnOf = m.m === 'POST' && /^\/session\/([^/]+)\/message$/.exec(path)
@@ -373,9 +404,99 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
     }
   }, 15_000)
   helloTimer = setInterval(() => { if (peer.peers >= 2) hello() }, HELLO_EVERY_MS)
+
+  // ── WHAT IS WAITING (tools/code-asks.mjs) ── OpenCode's GET /permission breaks for a whole folder on one ask with an
+  // undefined in its metadata, and keeps a stopped turn's asks forever. So every folder's asks are followed on
+  // /global/event — whether or not a page is open — and a dead ask (its session stopped) is replied to, which heals the list.
+  const asks = createAskBook()
+  const watch = { ctrl: new AbortController(), live: false, epoch: 0 } // epoch: one per connection of the stream
+  const complete = new Map() // directory → the epoch in which its whole list was read — the book knows every ask since
+  const triedAt = new Map() // directory → when a whole read was last tried for a folder the book does not know in full
+  const suspects = new Map() // directory → ask ids whose session was not running at the last check
+  const opencodeCall = (method, path, directory, body) => fetchImpl(`${base}${path}${path.includes('?') ? '&' : '?'}directory=${encodeURIComponent(directory)}`, {
+    method, headers: { ...auth(), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, body: body !== undefined ? JSON.stringify(body) : undefined, signal: AbortSignal.any([watch.ctrl.signal, AbortSignal.timeout(requestTimeoutMs)]),
+  })
+  const opencodeJson = async (method, path, directory, body) => { const r = await opencodeCall(method, path, directory, body); return { ok: r.ok, status: r.status, json: await r.json().catch(() => null) } }
+  async function settleDead(dead) {
+    for (const { directory, ask } of dead) {
+      try {
+        const r = await opencodeCall('POST', `/permission/${encodeURIComponent(ask.id)}/reply`, directory, { reply: 'reject' })
+        if (r.ok) log(`opencode-connector: ${name} · cleared a ${ask.permission || 'permission'} approval a stopped turn left waiting`)
+      } catch { /* OpenCode restarting: the ask went with it */ }
+    }
+  }
+  /** OpenCode's list of waiting asks in a folder; the recorded ones when that list fails; null when neither can say.
+   *  The book answers only for a folder it has followed since a whole read, on the same connection: an ask from before
+   *  that is unknown to it, and a list missing it would read as "answered" — the page drops the card, Auto a held refusal. */
+  async function pendingAsks(directory) {
+    const epoch = watch.live ? watch.epoch : -1
+    try {
+      const r = await opencodeCall('GET', '/permission', directory)
+      const list = await r.json().catch(() => null)
+      if (r.ok && Array.isArray(list)) {
+        asks.merge(directory, list)
+        if (epoch >= 0 && watch.live && watch.epoch === epoch) complete.set(directory, epoch)
+        return list
+      }
+    } catch { return null } // OpenCode is not answering
+    return watch.live && complete.get(directory) === watch.epoch ? asks.list(directory) : null
+  }
+  /** A folder with activity whose list the book does not know in full: read it now, while no broken ask is in it yet. */
+  function learnFolder(directory) {
+    if (!directory || complete.get(directory) === watch.epoch || Date.now() - (triedAt.get(directory) || 0) < 5000) return
+    triedAt.set(directory, Date.now())
+    pendingAsks(directory)
+  }
+  /** Asks whose session is not running at TWO checks in a row are dead (a stop the stream missed) — one reading never
+   *  rejects a live ask. A stop the stream saw is settled at once by its idle event. */
+  async function reconcileAsks() {
+    for (const directory of asks.directories()) {
+      const known = asks.list(directory)
+      try {
+        const r = await opencodeCall('GET', '/session/status', directory)
+        const status = r.ok ? await r.json().catch(() => null) : null
+        if (!status || typeof status !== 'object' || Array.isArray(status)) continue
+        const busy = Object.keys(status).filter((sid) => status[sid] && status[sid].type !== 'idle')
+        const before = suspects.get(directory) || new Set()
+        const notRunning = known.filter((a) => !busy.includes(a.sessionID)).map((a) => a.id)
+        suspects.set(directory, new Set(notRunning))
+        await settleDead(asks.settleIdle(directory, busy, notRunning.filter((id) => before.has(id))))
+      } catch { /* next time */ }
+    }
+    for (const directory of [...suspects.keys()]) if (!asks.directories().includes(directory)) suspects.delete(directory)
+  }
+  ;(async () => {
+    let wait = 1000
+    while (!watch.ctrl.signal.aborted) {
+      try {
+        const r = await fetchImpl(`${base}/global/event`, { headers: { ...auth(), accept: 'text/event-stream' }, signal: watch.ctrl.signal })
+        if (!r.ok || !r.body || !/event-stream/.test(r.headers.get('content-type') || '')) throw new Error(`global event stream ${r.status}`)
+        watch.epoch++
+        watch.live = true
+        wait = 1000
+        reconcileAsks() // a turn stopped while the stream was down
+        const feed = sseReader((data) => {
+          if (!ASK_FRAME.test(data)) return
+          let frame = null
+          try { frame = JSON.parse(data) } catch { return }
+          const dead = asks.apply(frame)
+          if (dead.length) settleDead(dead)
+          learnFolder(frame && typeof frame.directory === 'string' ? frame.directory : '')
+        })
+        const dec = new TextDecoder()
+        for await (const chunk of r.body) feed(dec.decode(chunk, { stream: true }))
+      } catch { /* stopped, OpenCode restarted, or an OpenCode without /global/event */ }
+      watch.live = false
+      if (watch.ctrl.signal.aborted) break
+      await new Promise((res) => { const t = setTimeout(res, wait); watch.ctrl.signal.addEventListener('abort', () => { clearTimeout(t); res() }, { once: true }) })
+      wait = Math.min(wait * 2, 30_000)
+    }
+  })()
+  const reconcileTimer = setInterval(() => { if (watch.live) reconcileAsks() }, asksReconcileMs)
+
   const safeId = String(pairing.computerId || 'default').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
   auto = startAutoRunner({
-    base, auth, fetchImpl, log, pollMs: autoPollMs,
+    base, auth, fetchImpl, log, pollMs: autoPollMs, listAsks: pendingAsks,
     statePath: join(autoDir, `auto-${safeId}.json`), logPath: join(autoDir, 'auto-log.jsonl'),
     onVerdict: (v) => peer.send({ t: 'autoverdict', ...v, ts: Date.now() }),
   })
@@ -384,7 +505,8 @@ async function servePairing(pairing, { fetchImpl, WebSocketImpl, flushMs, log, r
   return {
     peer,
     stop: () => {
-      clearInterval(sweep); clearInterval(helloTimer)
+      clearInterval(sweep); clearInterval(helloTimer); clearInterval(reconcileTimer)
+      watch.ctrl.abort()
       if (auto) auto.stop()
       for (const k of [...subs.keys()]) unsubscribe(k, ALL)
       for (const c of inflight.values()) { try { c.abort() } catch { /* */ } }

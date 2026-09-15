@@ -81,3 +81,14 @@ test('notes: installing puts the plugin and /notes-init where OpenCode loads the
   assert.equal(existsSync(join(dir, 'witbitz-confidential-models.json')), false, 'only the notes read it, and the split is gone')
   assert.equal(existsSync(join(dir, 'plugins', 'witbitz-notes.test.mjs')), false, 'only the plugin, never its tests')
 })
+
+test('progress: installing puts the progress_update plugin where OpenCode loads it, and only the plugin', async () => {
+  const { installProgress } = await import('./opencode-config.mjs')
+  const { mkdtempSync, readFileSync, readdirSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'wb-occfg-'))
+  installProgress({ configDir: dir })
+  assert.ok(readFileSync(join(dir, 'plugins', 'witbitz-progress.js'), 'utf8').includes('export const WitbitzProgress'))
+  assert.deepEqual(readdirSync(join(dir, 'plugins')), ['witbitz-progress.js'])
+})

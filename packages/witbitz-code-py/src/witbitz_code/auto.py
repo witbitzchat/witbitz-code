@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 from . import _js
+from .folders import folders_cover  # "allow this folder": what the person allowed for the session
 
 SEVERITY_CEILING = 70  # an "allow" this severe is shown to the person instead
 MAX_REQUEST_CHARS = 4000
@@ -222,9 +223,21 @@ def _project_dir(directory: Any) -> str:
     return re.sub(r"/+\Z", "", posix_normalize(d))
 
 
-def _word_stays_in_project(w: str, directory: Any) -> bool:
-    """A word a read-only command may be given: nothing that expands ($VAR), reaches home (~) or climbs out (..), no absolute
-    path outside the project, and nothing sensitive (a .env, a key, .git/…)."""
+def _project_roots(ctx: dict) -> list[str]:
+    """The project directory and the folders the person allowed for the session."""
+    roots: list[str] = []
+    folders = ctx.get("folders")
+    for r in [ctx.get("directory"), *(folders if isinstance(folders, list) else [])]:
+        d = _project_dir(r)
+        if d and d.startswith("/") and d not in roots:
+            roots.append(d)
+    return roots
+
+
+def _word_stays_in_project(w: str, ctx: dict) -> bool:
+    """A word a read-only command may be given: nothing that expands ($VAR) or climbs out (..), no absolute path outside the
+    project (or a folder the person allowed), and nothing sensitive (a .env, a key, .git/…). ~ reaches home: a path spelled
+    `~/…` counts only inside an allowed folder."""
     v = w
     if v.startswith("-"):
         eq = v.find("=")
@@ -233,12 +246,18 @@ def _word_stays_in_project(w: str, directory: Any) -> bool:
         v = v[eq + 1:]
         if not v:
             return True
-    if "$" in v or v.startswith("~") or re.search(r"(^|/)\.\.(/|\Z)", v):
+    if "$" in v or re.search(r"(^|/)\.\.(/|\Z)", v):
         return False
+    if v.startswith("~"):
+        home = _project_dir(ctx.get("home"))
+        folders = ctx.get("folders")
+        if not (v == "~" or v.startswith("~/")) or not home.startswith("/") or not (isinstance(folders, list) and folders):
+            return False
+        v = home + v[1:]
     if v.startswith("/"):
-        d = _project_dir(directory)
         a = posix_normalize(v)
-        return bool(d) and d.startswith("/") and (a == d or a.startswith(d + "/")) and not _sensitive_path(a[len(d):])
+        d = next((r for r in _project_roots(ctx) if a == r or a.startswith(r + "/")), "")
+        return bool(d) and not _sensitive_path(a[len(d):])
     return not _sensitive_path("/" + v)
 
 
@@ -255,13 +274,13 @@ _WRITES = {  # read-only programs that still write or run something with the rig
 }
 
 
-def _segment_read_only(words: list[str], directory: Any) -> bool:
+def _segment_read_only(words: list[str], ctx: dict) -> bool:
     name, args, prefixed = program_of(words)
     if prefixed or name not in _READ_ONLY:
         return False
     if name in _WRITES and _WRITES[name](args):
         return False
-    if not all(_word_stays_in_project(a, directory) for a in args):
+    if not all(_word_stays_in_project(a, ctx) for a in args):
         return False
     if name == "find":
         return not any(re.fullmatch(r"-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)", a) for a in args)
@@ -300,21 +319,23 @@ def _segment_read_only(words: list[str], directory: Any) -> bool:
     return True
 
 
-def _bash_read_only(shell: dict, directory: Any) -> bool:
+def _bash_read_only(shell: dict, ctx: dict) -> bool:
     if shell["substitution"] or shell["redirect"] or not shell["segments"]:
         return False
-    return all(_segment_read_only(seg, directory) for seg in shell["segments"])
+    return all(_segment_read_only(seg, ctx) for seg in shell["segments"])
 
 
-def _edit_inside_project(patterns: Any, directory: Any) -> bool:
-    d = _project_dir(directory)
+def _edit_inside_project(patterns: Any, ctx: dict) -> bool:
+    d = _project_dir(ctx.get("directory"))
     if not d or not d.startswith("/") or not isinstance(patterns, list) or not patterns:
         return False
+    roots = _project_roots(ctx)
     for p in patterns:
         if not isinstance(p, str) or not p or re.search(r"[*?\[\]{}]", p):
             return False  # a glob is not a precise target
         a = posix_normalize(p if p.startswith("/") else d + "/" + p)
-        if not (a.startswith(d + "/") and not _sensitive_path(a[len(d):])):
+        r = next((x for x in roots if a.startswith(x + "/")), "")
+        if not (r and not _sensitive_path(a[len(r):])):
             return False
     return True
 
@@ -363,10 +384,11 @@ def scratch_paths(req: Any) -> list[str]:
     return [posix_normalize(x[:-2] if x.endswith("/*") else x) for x in items if isinstance(x, str) and x]
 
 
-def classify_deterministic(req: Any, *, directory: Any = None, home: Any = None) -> dict | None:
-    """The model-free layer. None ⇒ the reviewer decides."""
+def classify_deterministic(req: Any, *, directory: Any = None, home: Any = None, folders: Any = None) -> dict | None:
+    """The model-free layer. None ⇒ the reviewer decides. `folders`: the folders the person allowed for the session."""
     if not isinstance(req, dict) or not isinstance(req.get("permission"), str):
         return None
+    ctx = {"directory": directory, "home": home, "folders": folders if isinstance(folders, list) else []}
     permission = req["permission"]
     if permission == "bash":
         command = _command_of(req)
@@ -380,14 +402,21 @@ def classify_deterministic(req: Any, *, directory: Any = None, home: Any = None)
         deny = _hard_deny(shell, home)
         if deny:
             return {"stage": "hard-deny", "decision": "deny", **deny}
-        if _bash_read_only(shell, directory):
+        if _bash_read_only(shell, ctx):
             return {"stage": "fast-allow", "decision": "allow", "rule": "fast:read-only-shell", "reason": "reads only"}
         return None
-    if permission in ("edit", "write") and _edit_inside_project(_get(req, "patterns"), directory):
+    if permission in ("edit", "write") and _edit_inside_project(_get(req, "patterns"), ctx):
         return {"stage": "fast-allow", "decision": "allow", "rule": "fast:edit-in-project", "reason": "an edit inside the project to an ordinary file"}
     scratch = {"stage": "fast-allow", "decision": "allow", "rule": "fast:agent-scratch", "reason": f"the agent's own intermediate files under {SCRATCH_DIR}"}
     if permission == "external_directory" and _ask_in_scratch(req):
         return scratch
+    # A folder outside the project is the PERSON's to allow — once, for the whole folder (folders.py) — never the reviewer's
+    # guess. Inside a folder they allowed, OpenCode no longer asks; if it does, it is allowed.
+    if permission == "external_directory":
+        if ctx["folders"] and folders_cover(req, ctx["folders"]):
+            return {"stage": "fast-allow", "decision": "allow", "rule": "fast:allowed-folder", "reason": "inside a folder the person allowed for this conversation"}
+        return {"stage": "fast-ask", "decision": "ask", "rule": "ask:new-folder",
+                "reason": "a folder outside the project — allow it once and the whole folder is open for this conversation"}
     if permission in ("edit", "write") and _edit_in_scratch(_get(req, "patterns")):
         return scratch
     return None
@@ -405,7 +434,8 @@ SOFT DENY — deny unless the person's recent messages clearly ask for exactly t
 network uploads or downloads the task does not need; piping a download into a shell (curl … | sh); deleting anything
 outside build, cache or generated directories; git push (above all --force) and history rewrites of shared branches;
 deploy, publish or release commands; reading, printing or moving credentials, tokens, keys or secret stores; changing
-system configuration; sudo; any other path outside the project directory; long-running servers exposed beyond localhost.
+system configuration; sudo; any other path outside the project directory (folders in allowed_folders ARE part of the
+project: the person allowed them for this conversation); long-running servers exposed beyond localhost.
 
 HARD DENY — always deny: sending code, secrets or environment variables to an outside destination (exfiltration);
 destroying the home directory or the filesystem; disabling security controls.
@@ -427,7 +457,7 @@ def _cut(s: Any, n: int) -> str:
     return _js.utf16_slice(t, 0, n) + f" …[{length - n} more chars]" if length > n else t
 
 
-def reviewer_prompt(req: Any, directory: Any, user_messages: Any = None, tool: Any = "") -> dict:
+def reviewer_prompt(req: Any, directory: Any, user_messages: Any = None, tool: Any = "", folders: Any = None) -> dict:
     """`tool`: the tool that raised the ask (read, edit, bash…), when the runner found it in the transcript."""
     r = req if isinstance(req, dict) else {}
     command = _command_of(r) or ""
@@ -443,6 +473,7 @@ def reviewer_prompt(req: Any, directory: Any, user_messages: Any = None, tool: A
         *([f"tool: {_cut(tool, 64)}"] if isinstance(tool, str) and tool else []),
         *([f"file: {_cut(file, 1024)}"] if file else []),
         f"project_directory: {_cut(directory, 512)}",
+        *([f"allowed_folders: {_cut(', '.join('' if f is None else _js.js_string(f) for f in folders), 1024)}"] if isinstance(folders, list) and folders else []),
         "</request>",
         '<recent_user_messages oldest_first="true">',
         *[f"[{i + 1}] {_cut(m, MAX_MESSAGE_CHARS)}" for i, m in enumerate(msgs)],

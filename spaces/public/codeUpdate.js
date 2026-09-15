@@ -9,7 +9,7 @@
 //   and the download deploy together) — otherwise older computers are not told to update for it.
 
 /** What a current connector announces — tools/opencode-connector.mjs and witbitz_code/connector.py `caps`. */
-export const CONNECTOR_CAPS = ['auto', 'attachments', 'outputs', 'tools', 'seen']
+export const CONNECTOR_CAPS = ['auto', 'attachments', 'outputs', 'tools', 'seen', 'asks', 'folders']
 export const UPDATE_COMMAND = 'curl -fsSL https://app.witbitz.chat/code.sh | bash'
 export const UPDATE_COMMAND_PIPX = 'pipx upgrade witbitz-code'
 

@@ -1,6 +1,7 @@
 // tools/code-auto-runner.mjs — Code Auto mode's loop inside the connector (docs/code-auto-mode.md §2).
 //
-// For each session switched to Auto it polls OpenCode's pending permission asks (GET /permission?directory=…), and for each
+// For each session switched to Auto it polls OpenCode's pending permission asks (GET /permission?directory=…, or the
+// connector's `listAsks` — which falls back to the asks the event stream carried when that list breaks), and for each
 // new one: the deterministic layer (tools/code-auto.mjs) answers what needs no model; otherwise the SESSION'S OWN model
 // reviews it in a throw-away session whose rules deny every tool. Only a clear allow is answered `once`, a deny is
 // answered `reject` with the reason for the agent, and everything else — ask, nonsense, a severe allow, a timeout, any
@@ -22,6 +23,7 @@ import { dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { classifyDeterministic, reviewerPrompt, parseVerdict, actionFor, logRecord, scratchPaths, SCRATCH_DIR } from './code-auto.mjs'
 import { SUBAGENT_GATED } from './code-opencode-policy.mjs'
+import { allowedFolders } from '../spaces/public/codeFolders.js'
 
 const REVIEW_TITLE = 'witbitz-auto-review' // the page never lists a session with this title
 const HANDLED_TTL_MS = 30 * 60_000
@@ -65,7 +67,7 @@ export function scratchOnDisk(paths, { dir = SCRATCH_DIR } = {}) {
   } catch { return false }
 }
 
-export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath, logPath, pollMs = 1000, reviewTimeoutMs = 30_000, home = homedir(), onVerdict = () => {}, log = console.error, now = Date.now, scratchCheck = scratchOnDisk }) {
+export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, statePath, logPath, pollMs = 1000, reviewTimeoutMs = 30_000, home = homedir(), onVerdict = () => {}, log = console.error, now = Date.now, scratchCheck = scratchOnDisk, listAsks = null }) {
   const root = String(base || '').replace(/\/+$/, '')
   const auto = new Map() // sessionID → { dir, at }
   const handled = new Map() // permission id → when it was taken up (so a poll never reviews it twice)
@@ -178,12 +180,21 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
     return null
   }
 
-  async function review(req, dir, owner = req.sessionID) {
+  /** The folders the person allowed for the session that asked ("allow this folder") — they count as the project. A subagent's
+   *  session holds its parent's (OpenCode copies external_directory rules into it), so its own rules say. */
+  async function foldersOf(sid, dir) {
+    try {
+      const r = await call('GET', `/session/${encodeURIComponent(sid)}`, dir)
+      return r.ok && r.json ? allowedFolders(r.json.permission) : []
+    } catch { return [] }
+  }
+
+  async function review(req, dir, owner = req.sessionID, folders = []) {
     const { model, userMessages, tools } = await sessionContext(owner, dir)
     if (!model) return { verdict: null, model: '', note: 'the session has no model to review with yet' }
     // A subagent's ask names a call in ITS transcript, not the owner's: then there is no tool line, as before.
     const tool = (req.tool && typeof req.tool.callID === 'string' && tools.get(req.tool.callID)) || ''
-    const prompt = reviewerPrompt({ req, directory: dir, userMessages, tool })
+    const prompt = reviewerPrompt({ req, directory: dir, userMessages, tool, folders })
     const created = await call('POST', '/session', dir, { title: REVIEW_TITLE, permission: [{ permission: '*', pattern: '*', action: 'deny' }] })
     const rid = created.json && created.json.id
     if (!rid) return { verdict: null, model: `${model.providerID}/${model.modelID}`, note: 'could not open a review session' }
@@ -210,12 +221,13 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
 
   async function decide(req, dir, owner = req.sessionID) {
     const t0 = now()
-    let det = classifyDeterministic(req, { directory: dir, home })
+    const folders = await foldersOf(req.sessionID, dir)
+    let det = classifyDeterministic(req, { directory: dir, home, folders })
     if (det && det.rule === 'fast:agent-scratch' && !scratchCheck(scratchPaths(req))) det = null // the disk disagrees: the reviewer's
     det = det || await classifySubagent(req, dir)
     let stage, verdict, model = '', note = ''
     if (det) { stage = det.stage; verdict = { decision: det.decision, severity: det.stage === 'hard-deny' ? 100 : det.stage === 'fast-ask' ? 50 : 0, rule: det.rule, reason: det.reason } }
-    else { stage = 'reviewer'; ({ verdict, model, note } = await review(req, dir, owner)) }
+    else { stage = 'reviewer'; ({ verdict, model, note } = await review(req, dir, owner, folders)) }
     const action = det ? det.decision : actionFor(verdict)
     const rec = logRecord({ req, stage, verdict, action, model, ms: now() - t0, at: t0 })
     const reason = (verdict && verdict.reason) || note || ''
@@ -256,6 +268,10 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
   }
 
   // ── the loop ──
+  async function pending(dir) {
+    if (listAsks) { try { return await listAsks(dir) } catch { return null } }
+    try { const r = await call('GET', '/permission', dir); return r.ok && Array.isArray(r.json) ? r.json : null } catch { return null }
+  }
   async function poll() {
     if (polling || stopped || !auto.size) return
     polling = true
@@ -264,8 +280,10 @@ export function startAutoRunner({ base, auth = () => ({}), fetchImpl = fetch, st
       for (const [id, at] of handled) if (at < cutoff) handled.delete(id)
       const dirs = new Set([...auto.values()].map((v) => v.dir))
       for (const dir of dirs) {
-        let list = []
-        try { const r = await call('GET', '/permission', dir); list = Array.isArray(r.json) ? r.json : [] } catch { continue } // OpenCode restarting
+        // null = nobody can say what is waiting (OpenCode restarting, or its list broken with no events to go on): skip the
+        // folder. Taken as "nothing is waiting", it would drop every held refusal as answered elsewhere.
+        const list = await pending(dir)
+        if (!list) continue
         for (const req of list) {
           if (!req || typeof req.id !== 'string' || typeof req.sessionID !== 'string' || handled.has(req.id)) continue
           const owner = await ownerOf(req.sessionID, dir)

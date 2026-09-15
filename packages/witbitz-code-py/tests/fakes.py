@@ -189,9 +189,15 @@ class FakeOpenCode:
                         outer.seen.append({"aborted": path})
                     return
                 if path == "/permission" and self.command == "GET":  # Auto mode's poll (auto_runner.py)
+                    if outer.permission_broken:  # OpenCode 1.18.30 with a webfetch ask that has no timeout (measured, asks.py)
+                        return self._send(400, json.dumps({"name": "BadRequest", "data": {"message": "Expected JSON value, got undefined\n  at [0][\"metadata\"][\"timeout\"]", "kind": "Body"}}))
                     with outer.lock:
                         pending = json.dumps(outer.pending)
                     return self._send(200, pending)
+                if path == "/session/status" and self.command == "GET":
+                    with outer.lock:
+                        status = json.dumps(outer.status)
+                    return self._send(200, status)
                 reply = re.fullmatch(r"/permission/([^/]+)/reply", path)
                 if reply and self.command == "POST":
                     with outer.lock:
@@ -199,19 +205,23 @@ class FakeOpenCode:
                     return self._send(200, "true")
                 if path == "/event":
                     return self._stream()
+                if path == "/global/event":  # every folder's events: the connector's own watch of what is waiting (asks.py)
+                    return self._stream(global_stream=True)
                 return self._send(200, json.dumps({"ok": True}))
 
-            def _stream(self) -> None:
+            def _stream(self, global_stream: bool = False) -> None:
                 self.send_response(200)
                 self.send_header("content-type", "text/event-stream")
                 self.end_headers()
                 self.wfile.write(b": open\n\n")
                 self.wfile.flush()
                 queue: list = []
+                registry = outer._global_queues if global_stream else outer._queues
                 with outer.lock:
-                    outer.streams.add(id(queue))
-                    outer._queues[id(queue)] = queue
-                if outer.auto_events:
+                    if not global_stream:
+                        outer.streams.add(id(queue))
+                    registry[id(queue)] = queue
+                if outer.auto_events and not global_stream:
                     def later() -> None:
                         time.sleep(outer.auto_delay)
                         outer.emit_all(outer.auto_events)
@@ -230,12 +240,15 @@ class FakeOpenCode:
                 finally:
                     with outer.lock:
                         outer.streams.discard(id(queue))
-                        outer._queues.pop(id(queue), None)
+                        registry.pop(id(queue), None)
 
             do_GET = do_POST = do_PATCH = do_DELETE = _handle
 
         self._queues: dict = {}
+        self._global_queues: dict = {}  # /global/event streams
         self.pending: list = []  # permission asks waiting, as GET /permission lists them
+        self.permission_broken = False  # GET /permission answers OpenCode's 400 for a malformed ask
+        self.status: dict = {}  # GET /session/status
         self.once_calls = 0
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.daemon_threads = True
@@ -250,6 +263,15 @@ class FakeOpenCode:
         with self.lock:
             for q in self._queues.values():
                 q.extend(objs)
+
+    def emit_global(self, objs: list) -> None:
+        with self.lock:
+            for q in self._global_queues.values():
+                q.extend(objs)
+
+    def global_count(self) -> int:
+        with self.lock:
+            return len(self._global_queues)
 
     def stream_count(self) -> int:
         with self.lock:
